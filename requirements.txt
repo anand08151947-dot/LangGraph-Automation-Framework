@@ -1,2 +1,27 @@
-google-genai>=0.3.0
-openai>=1.0.0
+
+# Core web framework and async server
+fastapi
+uvicorn
+
+# Data validation and models
+pydantic
+
+# LLM and generative AI
+openai
+google-genai
+
+# Security and JWT
+pyjwt
+
+# HTTP requests
+requests
+
+# JSON schema validation
+jsonschema
+
+# LangGraph (core agentic workflow engine)
+langgraph
+
+# Optional: for .env support and async file ops
+python-dotenv
+aiofiles
