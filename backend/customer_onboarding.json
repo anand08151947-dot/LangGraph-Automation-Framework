@@ -1,0 +1,14 @@
+﻿{
+    "use_case": "Customer Onboarding Workflow",
+    "description": "Multi-agent onboarding process with document verification, account setup, and welcome communication.",
+    "sample_prompt": "Create a workflow where a Collector gathers customer info, a Verifier checks documents, an AccountCreator sets up the account, and a Welcomer sends a welcome message.",
+    "template_json": {
+      "graph_name": "Customer_Onboarding_Flow",
+      "agents": [
+        {"name": "Collector", "system_prompt": "Collect customer information and documents.", "tools": ["form_api"], "next": "Verifier"},
+        {"name": "Verifier", "system_prompt": "Verify submitted documents for authenticity.", "tools": ["verification_api"], "next": "AccountCreator"},
+        {"name": "AccountCreator", "system_prompt": "Create customer account in the system.", "tools": ["account_api"], "next": "Welcomer"},
+        {"name": "Welcomer", "system_prompt": "Send a welcome message to the new customer.", "tools": ["email_api"], "next": "END"}
+      ]
+    }
+  }

@@ -1,0 +1,72 @@
+[
+  {
+    "use_case": "Healthcare Patient Intake",
+    "description": "Automated patient intake workflow with triage, doctor assignment, and follow-up.",
+    "sample_prompt": "Create a workflow where an IntakeAgent collects patient info, a TriageAgent assesses urgency, a DoctorAgent provides care, and a FollowUpAgent schedules follow-up.",
+    "template_json": {
+      "graph_name": "Patient_Intake_Flow",
+      "agents": [
+        {"name": "IntakeAgent", "system_prompt": "Collect patient information and symptoms.", "tools": ["ehr_api"], "next": "TriageAgent"},
+        {"name": "TriageAgent", "system_prompt": "Assess urgency and assign to appropriate doctor.", "tools": ["triage_tool"], "next": "DoctorAgent"},
+        {"name": "DoctorAgent", "system_prompt": "Provide medical care and instructions.", "tools": ["ehr_api"], "next": "FollowUpAgent"},
+        {"name": "FollowUpAgent", "system_prompt": "Schedule follow-up appointment and send reminders.", "tools": ["calendar_api"], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Legal Document Review",
+    "description": "Multi-agent legal document review and approval workflow.",
+    "sample_prompt": "Create a workflow where a Collector gathers documents, a Reviewer checks for compliance, a LawyerAgent provides legal advice, and an Approver finalizes the review.",
+    "template_json": {
+      "graph_name": "Legal_Document_Review_Flow",
+      "agents": [
+        {"name": "Collector", "system_prompt": "Collect legal documents for review.", "tools": ["doc_api"], "next": "Reviewer"},
+        {"name": "Reviewer", "system_prompt": "Review documents for compliance and completeness.", "tools": ["compliance_tool"], "next": "LawyerAgent"},
+        {"name": "LawyerAgent", "system_prompt": "Provide legal advice and flag issues.", "tools": ["legal_db"], "next": "Approver"},
+        {"name": "Approver", "system_prompt": "Finalize review and approve documents.", "tools": [], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Education Course Creation",
+    "description": "Automated course creation workflow with curriculum design, content writing, review, and publishing.",
+    "sample_prompt": "Create a workflow where a Designer creates curriculum, a Writer drafts lessons, a Reviewer checks quality, and a Publisher posts the course.",
+    "template_json": {
+      "graph_name": "Course_Creation_Flow",
+      "agents": [
+        {"name": "Designer", "system_prompt": "Design course curriculum and structure.", "tools": ["curriculum_api"], "next": "Writer"},
+        {"name": "Writer", "system_prompt": "Draft lesson content for the course.", "tools": ["content_tool"], "next": "Reviewer"},
+        {"name": "Reviewer", "system_prompt": "Review lessons for quality and accuracy.", "tools": [], "next": "Publisher"},
+        {"name": "Publisher", "system_prompt": "Publish the course to the platform.", "tools": ["lms_api"], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Supply Chain Management",
+    "description": "Multi-agent workflow for supply chain order processing, tracking, and delivery confirmation.",
+    "sample_prompt": "Create a workflow where an OrderAgent processes orders, a Tracker monitors shipments, a DeliveryAgent confirms delivery, and a FeedbackAgent collects customer feedback.",
+    "template_json": {
+      "graph_name": "Supply_Chain_Flow",
+      "agents": [
+        {"name": "OrderAgent", "system_prompt": "Process supply chain orders.", "tools": ["order_api"], "next": "Tracker"},
+        {"name": "Tracker", "system_prompt": "Track shipment status and location.", "tools": ["tracking_api"], "next": "DeliveryAgent"},
+        {"name": "DeliveryAgent", "system_prompt": "Confirm delivery with customer.", "tools": ["delivery_api"], "next": "FeedbackAgent"},
+        {"name": "FeedbackAgent", "system_prompt": "Collect customer feedback after delivery.", "tools": ["survey_api"], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Real Estate Property Listing",
+    "description": "Automated property listing workflow with data collection, agent review, legal check, and publishing.",
+    "sample_prompt": "Create a workflow where a Collector gathers property data, an Agent reviews details, a LegalAgent checks compliance, and a Publisher lists the property.",
+    "template_json": {
+      "graph_name": "Property_Listing_Flow",
+      "agents": [
+        {"name": "Collector", "system_prompt": "Collect property data and images.", "tools": ["property_api"], "next": "Agent"},
+        {"name": "Agent", "system_prompt": "Review property details and images.", "tools": [], "next": "LegalAgent"},
+        {"name": "LegalAgent", "system_prompt": "Check property for legal compliance.", "tools": ["legal_db"], "next": "Publisher"},
+        {"name": "Publisher", "system_prompt": "List the property on the platform.", "tools": ["listing_api"], "next": "END"}
+      ]
+    }
+  }
+]

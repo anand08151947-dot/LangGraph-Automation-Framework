@@ -1,0 +1,72 @@
+[
+  {
+    "use_case": "Data Pipeline with Reviewer",
+    "description": "A multi-step data pipeline where each stage is reviewed before proceeding.",
+    "sample_prompt": "Create a workflow where a DataCollector gathers data, a Reviewer checks it, a Processor transforms it, and a FinalReviewer approves before storage.",
+    "template_json": {
+      "graph_name": "Data_Pipeline_Review",
+      "agents": [
+        {"name": "DataCollector", "system_prompt": "Collect raw data from sources.", "tools": ["data_api"], "next": "Reviewer"},
+        {"name": "Reviewer", "system_prompt": "Review collected data for quality. If not approved, return to DataCollector.", "tools": [], "next": "Processor"},
+        {"name": "Processor", "system_prompt": "Process and transform data.", "tools": ["transform_tool"], "next": "FinalReviewer"},
+        {"name": "FinalReviewer", "system_prompt": "Approve processed data for storage. If not approved, return to Processor.", "tools": [], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Multi-Agent Chatbot Escalation",
+    "description": "A chatbot workflow where escalation occurs to a human agent if the bot cannot resolve the issue.",
+    "sample_prompt": "Create a workflow where a Chatbot answers user queries, escalates to a Specialist if it cannot help, and finally to a HumanAgent if the Specialist cannot resolve.",
+    "template_json": {
+      "graph_name": "Chatbot_Escalation_Flow",
+      "agents": [
+        {"name": "Chatbot", "system_prompt": "Answer user queries. If unable, escalate to Specialist.", "tools": ["faq_db"], "next": "Specialist"},
+        {"name": "Specialist", "system_prompt": "Handle complex queries. If unable, escalate to HumanAgent.", "tools": ["knowledge_base"], "next": "HumanAgent"},
+        {"name": "HumanAgent", "system_prompt": "Resolve escalated issues.", "tools": [], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Automated Code Review",
+    "description": "A workflow for automated code review and approval using MCP GitHub tools.",
+    "sample_prompt": "Create a workflow where a CodeReviewer checks PRs using GitHub MCP tools, a LeadReviewer gives final approval, and a Merger merges the PR if approved.",
+    "template_json": {
+      "graph_name": "Automated_Code_Review",
+      "mcp_servers": {
+        "github_tools": {"type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]}
+      },
+      "agents": [
+        {"name": "CodeReviewer", "system_prompt": "Review pull requests using GitHub MCP tools.", "mcp_bindings": ["github_tools"], "next": "LeadReviewer"},
+        {"name": "LeadReviewer", "system_prompt": "Give final approval for PRs.", "mcp_bindings": ["github_tools"], "next": "Merger"},
+        {"name": "Merger", "system_prompt": "Merge approved PRs.", "mcp_bindings": ["github_tools"], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Multi-Stage Content Generation",
+    "description": "A workflow for generating, editing, and publishing content with multiple agents.",
+    "sample_prompt": "Create a workflow where a Writer drafts content, an Editor refines it, a Proofreader checks for errors, and a Publisher posts the final version.",
+    "template_json": {
+      "graph_name": "Content_Generation_Flow",
+      "agents": [
+        {"name": "Writer", "system_prompt": "Draft initial content.", "tools": ["web_search"], "next": "Editor"},
+        {"name": "Editor", "system_prompt": "Edit and improve the draft.", "tools": [], "next": "Proofreader"},
+        {"name": "Proofreader", "system_prompt": "Check for errors and suggest corrections.", "tools": [], "next": "Publisher"},
+        {"name": "Publisher", "system_prompt": "Publish the final content.", "tools": ["cms_api"], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Multi-Agent Research and Synthesis",
+    "description": "Agents collaborate to research, synthesize, and present findings.",
+    "sample_prompt": "Create a workflow where a Researcher gathers information, a Synthesizer combines insights, and a Presenter creates a summary report.",
+    "template_json": {
+      "graph_name": "Research_Synthesis_Flow",
+      "agents": [
+        {"name": "Researcher", "system_prompt": "Gather information on the topic.", "tools": ["web_search"], "next": "Synthesizer"},
+        {"name": "Synthesizer", "system_prompt": "Combine and synthesize research findings.", "tools": [], "next": "Presenter"},
+        {"name": "Presenter", "system_prompt": "Create a summary report based on synthesized findings.", "tools": [], "next": "END"}
+      ]
+    }
+  }
+]

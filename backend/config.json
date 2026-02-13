@@ -1,0 +1,27 @@
+{
+  "memory": {
+    "backend": "sqlite",
+    "ltm_path": "ltm.db"
+  },
+  "observability": {
+    "backends": ["logging"]
+  },
+  "tool_registry": {
+    "enabled": true
+  },
+  "llm": {
+    "mode": "manual"  
+  },
+  "api_keys": {
+    "openai": "sk-REPLACE_ME"
+  },
+  "environments": {
+    "prod": {
+      "memory": {"backend": "redis", "host": "prod-redis:6379"},
+      "observability": {"backends": ["otel", "prometheus"]}
+    },
+    "dev": {
+      "observability": {"backends": ["logging"]}
+    }
+  }
+}

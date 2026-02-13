@@ -1,0 +1,96 @@
+[
+  {
+    "graph_name": "Agent_Cycle_Review",
+    "agents": [
+      {
+        "name": "Researcher",
+        "system_prompt": "Research the latest AI trends and summarize findings.",
+        "tools": ["web_search"],
+        "next": "Reviewer"
+      },
+      {
+        "name": "Reviewer",
+        "system_prompt": "Review the research summary. If incomplete, send back to Researcher; else, forward to Writer.",
+        "tools": [],
+        "next": "Researcher"
+      },
+      {
+        "name": "Writer",
+        "system_prompt": "Write a blog post based on the reviewed summary.",
+        "tools": [],
+        "next": "END"
+      }
+    ]
+  },
+  {
+    "graph_name": "Supervisor_Delegator_MultiAgent",
+    "mcp_servers": {
+      "slack_tools": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-slack"]
+      }
+    },
+    "agents": [
+      {
+        "name": "Supervisor",
+        "system_prompt": "Assign tasks to agents based on incoming requests. If a task fails, reassign or escalate.",
+        "tools": [],
+        "next": "Delegator"
+      },
+      {
+        "name": "Delegator",
+        "system_prompt": "Delegate subtasks to Worker1 and Worker2, aggregate their results.",
+        "tools": [],
+        "next": "Aggregator"
+      },
+      {
+        "name": "Worker1",
+        "system_prompt": "Handle data extraction tasks.",
+        "tools": ["slack_tools"],
+        "next": "Aggregator"
+      },
+      {
+        "name": "Worker2",
+        "system_prompt": "Handle data analysis tasks.",
+        "tools": [],
+        "next": "Aggregator"
+      },
+      {
+        "name": "Aggregator",
+        "system_prompt": "Combine results from Worker1 and Worker2, send to Supervisor for review.",
+        "tools": [],
+        "next": "Supervisor"
+      }
+    ]
+  },
+  {
+    "graph_name": "Multi_Supervisor_Approval_Flow",
+    "agents": [
+      {
+        "name": "Initiator",
+        "system_prompt": "Start a new project proposal and send to SupervisorA.",
+        "tools": [],
+        "next": "SupervisorA"
+      },
+      {
+        "name": "SupervisorA",
+        "system_prompt": "Review proposal. If approved, send to SupervisorB; if not, return to Initiator for revision.",
+        "tools": [],
+        "next": "SupervisorB"
+      },
+      {
+        "name": "SupervisorB",
+        "system_prompt": "Final approval. If approved, send to Executor; if not, return to SupervisorA.",
+        "tools": [],
+        "next": "Executor"
+      },
+      {
+        "name": "Executor",
+        "system_prompt": "Execute the approved project plan.",
+        "tools": [],
+        "next": "END"
+      }
+    ]
+  }
+]

@@ -1,0 +1,19 @@
+{
+  "graph_name": "simple_workflow",
+  "agents": [
+    {
+      "name": "agent_1",
+      "system_prompt": "Agent 1 does initial step",
+      "tools": [],
+      "mcp_bindings": [],
+      "next": "agent_2"
+    },
+    {
+      "name": "agent_2",
+      "system_prompt": "Agent 2 follows up and ends",
+      "tools": [],
+      "mcp_bindings": [],
+      "next": "END"
+    }
+  ]
+}

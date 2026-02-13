@@ -1,0 +1,6 @@
+
+{
+  "name": "Agentic AI Workbench",
+  "description": "A comprehensive platform for building, customizing, monitoring, and exporting agentic AI workflows with integrated LLM translation and orchestration monitoring.",
+  "requestFramePermissions": []
+}

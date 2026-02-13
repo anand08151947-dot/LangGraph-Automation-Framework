@@ -1,0 +1,30 @@
+{
+  "graph_name": "Example_Workflow",
+  "mcp_servers": {
+    "github_tools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    },
+    "postgres_db": {
+      "type": "sse",
+      "url": "http://localhost:8080/mcp"
+    }
+  },
+  "agents": [
+    {
+      "name": "Researcher",
+      "system_prompt": "You find facts about {topic}.",
+      "tools": ["tavily_search"],
+      "mcp_bindings": ["github_tools"],
+      "next": "Writer"
+    },
+    {
+      "name": "Writer",
+      "system_prompt": "You summarize research into a blog post.",
+      "tools": [],
+      "mcp_bindings": [],
+      "next": "END"
+    }
+  ]
+}

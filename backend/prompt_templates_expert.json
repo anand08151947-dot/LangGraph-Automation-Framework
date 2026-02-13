@@ -1,0 +1,72 @@
+[
+  {
+    "use_case": "Incident Response Workflow",
+    "description": "Automated incident detection, triage, escalation, and resolution with multiple agents.",
+    "sample_prompt": "Create a workflow where a Detector identifies incidents, a TriageAgent assesses severity, an Escalator notifies stakeholders if critical, and a Resolver fixes the issue.",
+    "template_json": {
+      "graph_name": "Incident_Response_Flow",
+      "agents": [
+        {"name": "Detector", "system_prompt": "Detect incidents from monitoring data.", "tools": ["monitoring_api"], "next": "TriageAgent"},
+        {"name": "TriageAgent", "system_prompt": "Assess incident severity. If critical, escalate; else, resolve.", "tools": [], "next": "Escalator"},
+        {"name": "Escalator", "system_prompt": "Notify stakeholders for critical incidents.", "tools": ["email_api"], "next": "Resolver"},
+        {"name": "Resolver", "system_prompt": "Resolve the incident and close the workflow.", "tools": ["remediation_tool"], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Customer Onboarding Workflow",
+    "description": "Multi-agent onboarding process with document verification, account setup, and welcome communication.",
+    "sample_prompt": "Create a workflow where a Collector gathers customer info, a Verifier checks documents, an AccountCreator sets up the account, and a Welcomer sends a welcome message.",
+    "template_json": {
+      "graph_name": "Customer_Onboarding_Flow",
+      "agents": [
+        {"name": "Collector", "system_prompt": "Collect customer information and documents.", "tools": ["form_api"], "next": "Verifier"},
+        {"name": "Verifier", "system_prompt": "Verify submitted documents for authenticity.", "tools": ["verification_api"], "next": "AccountCreator"},
+        {"name": "AccountCreator", "system_prompt": "Create customer account in the system.", "tools": ["account_api"], "next": "Welcomer"},
+        {"name": "Welcomer", "system_prompt": "Send a welcome message to the new customer.", "tools": ["email_api"], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Multi-Agent Financial Audit",
+    "description": "Agents collaborate to collect, analyze, and audit financial data, escalating to compliance if issues are found.",
+    "sample_prompt": "Create a workflow where a Collector gathers financial records, an Analyzer reviews for discrepancies, an Auditor checks compliance, and a ComplianceAgent intervenes if issues are found.",
+    "template_json": {
+      "graph_name": "Financial_Audit_Flow",
+      "agents": [
+        {"name": "Collector", "system_prompt": "Collect financial records from sources.", "tools": ["finance_api"], "next": "Analyzer"},
+        {"name": "Analyzer", "system_prompt": "Analyze records for discrepancies.", "tools": ["analysis_tool"], "next": "Auditor"},
+        {"name": "Auditor", "system_prompt": "Audit for compliance. If issues found, escalate to ComplianceAgent.", "tools": [], "next": "ComplianceAgent"},
+        {"name": "ComplianceAgent", "system_prompt": "Resolve compliance issues and close the audit.", "tools": ["compliance_api"], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Multi-Agent Recruitment Pipeline",
+    "description": "Automated recruitment process with screening, interviewing, and offer management.",
+    "sample_prompt": "Create a workflow where a Screener reviews applications, an Interviewer conducts interviews, a DecisionMaker selects candidates, and an OfferManager sends job offers.",
+    "template_json": {
+      "graph_name": "Recruitment_Pipeline_Flow",
+      "agents": [
+        {"name": "Screener", "system_prompt": "Screen job applications for minimum requirements.", "tools": ["hr_api"], "next": "Interviewer"},
+        {"name": "Interviewer", "system_prompt": "Conduct interviews with shortlisted candidates.", "tools": ["video_api"], "next": "DecisionMaker"},
+        {"name": "DecisionMaker", "system_prompt": "Select candidates for job offers.", "tools": [], "next": "OfferManager"},
+        {"name": "OfferManager", "system_prompt": "Send job offers to selected candidates.", "tools": ["email_api"], "next": "END"}
+      ]
+    }
+  },
+  {
+    "use_case": "Multi-Agent Event Planning",
+    "description": "Agents collaborate to plan, schedule, and execute an event, with feedback and post-event analysis.",
+    "sample_prompt": "Create a workflow where a Planner organizes the event, a Scheduler books resources, an Executor runs the event, and an Analyst reviews feedback.",
+    "template_json": {
+      "graph_name": "Event_Planning_Flow",
+      "agents": [
+        {"name": "Planner", "system_prompt": "Organize event details and requirements.", "tools": ["calendar_api"], "next": "Scheduler"},
+        {"name": "Scheduler", "system_prompt": "Book resources and schedule event activities.", "tools": ["booking_api"], "next": "Executor"},
+        {"name": "Executor", "system_prompt": "Execute the event as planned.", "tools": [], "next": "Analyst"},
+        {"name": "Analyst", "system_prompt": "Review event feedback and provide analysis.", "tools": ["feedback_api"], "next": "END"}
+      ]
+    }
+  }
+]

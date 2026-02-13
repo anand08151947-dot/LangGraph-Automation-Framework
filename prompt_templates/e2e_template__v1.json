@@ -1,0 +1,16 @@
+{
+  "graph_name": "e2e_workflow",
+  "agents": [
+    {
+      "name": "a1",
+      "system_prompt": "first",
+      "next": "a2"
+    },
+    {
+      "name": "a2",
+      "system_prompt": "second",
+      "next": "END"
+    }
+  ],
+  "description": "E2E test template"
+}

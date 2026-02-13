@@ -1,0 +1,39 @@
+# Python cache
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Artifacts and results
+backend/artifacts/
+ltm.db
+backend/ltm.db
+
+# Node modules and frontend build
+frontend/node_modules/
+frontend/.env.local
+frontend/package-lock.json
+
+# Local environment and secrets
+.env
+.env.*
+
+# OS files
+.DS_Store
+
+# Ignore database and zip artifacts
+*.db
+*.zip
+
+# Ignore temporary files
+*.log
+
+# Ignore test cache
+backend/langgraph/__pycache__/
+tests/__pycache__/
+
+# Ignore editor files
+*.swp
+*.swo
+
+# Ignore other unwanted files
+# (add more patterns as needed)
