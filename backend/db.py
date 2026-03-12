@@ -5,7 +5,7 @@ import json
 import os
 import glob
 from datetime import datetime
-from sqlalchemy import create_engine, Column, String, Text, DateTime, Integer
+from sqlalchemy import create_engine, Column, String, Text, DateTime, Integer, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "runs.db")
@@ -35,6 +35,11 @@ class TemplateRecord(Base):
     sample_prompt = Column(Text, nullable=True)
     template_json = Column(Text, nullable=True)    # JSON string of workflow config
     source_file = Column(String, nullable=True)    # originating filename
+    # Versioning fields
+    version = Column(Integer, nullable=False, default=1)
+    parent_name = Column(String, nullable=True)    # base template name this was derived from
+    is_custom = Column(Boolean, nullable=False, default=False)  # user-created/modified
+    updated_at = Column(DateTime, default=datetime.utcnow)
 
 def init_db():
     Base.metadata.create_all(bind=ENGINE)
@@ -134,7 +139,83 @@ def template_record_to_dict(record) -> dict:
         "sample_prompt": record.sample_prompt,
         "example": tj,
         "source_file": record.source_file,
+        "version": getattr(record, "version", 1) or 1,
+        "parent_name": getattr(record, "parent_name", None),
+        "is_custom": getattr(record, "is_custom", False) or False,
+        "updated_at": record.updated_at.isoformat() if getattr(record, "updated_at", None) else None,
     }
+
+def save_custom_template(name: str, description: str, template_json_obj: dict,
+                         parent_name: str = None, sample_prompt: str = None) -> dict:
+    """
+    Save a user-customized template. Auto-increments version if a template with
+    the same name already exists. Returns the saved record as a dict.
+    """
+    db = SessionLocal()
+    try:
+        existing = db.query(TemplateRecord).filter_by(name=name).first()
+        if existing:
+            existing.description = description
+            existing.sample_prompt = sample_prompt or existing.sample_prompt
+            existing.template_json = json.dumps(template_json_obj)
+            existing.version = (existing.version or 1) + 1
+            existing.parent_name = parent_name or existing.parent_name
+            existing.is_custom = True
+            existing.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(existing)
+            return template_record_to_dict(existing)
+        else:
+            # Determine initial version: if derived from a parent, find max version of siblings
+            initial_version = 1
+            if parent_name:
+                siblings = db.query(TemplateRecord).filter(
+                    TemplateRecord.parent_name == parent_name
+                ).all()
+                if siblings:
+                    initial_version = max((s.version or 1) for s in siblings) + 1
+            record = TemplateRecord(
+                name=name,
+                use_case=name,
+                description=description,
+                sample_prompt=sample_prompt,
+                template_json=json.dumps(template_json_obj),
+                source_file="custom",
+                version=initial_version,
+                parent_name=parent_name,
+                is_custom=True,
+                updated_at=datetime.utcnow(),
+            )
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+            return template_record_to_dict(record)
+    finally:
+        db.close()
+
+def get_template_versions(base_name: str) -> list:
+    """Return all versions of a template family (by parent_name or name)."""
+    db = SessionLocal()
+    try:
+        records = db.query(TemplateRecord).filter(
+            (TemplateRecord.parent_name == base_name) |
+            (TemplateRecord.name == base_name) |
+            TemplateRecord.name.like(f"{base_name}_v%")
+        ).order_by(TemplateRecord.version).all()
+        return [template_record_to_dict(r) for r in records]
+    finally:
+        db.close()
+
+def get_custom_templates() -> list:
+    """Return all user-customized templates."""
+    db = SessionLocal()
+    try:
+        records = db.query(TemplateRecord).filter_by(is_custom=True)\
+            .order_by(TemplateRecord.updated_at.desc()).all()
+        return [template_record_to_dict(r) for r in records]
+    finally:
+        db.close()
+
 
 def upsert_run(run_id: str, **kwargs):
     """Create or update a run record."""

@@ -1,7 +1,8 @@
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(__file__))
 from db import init_db, upsert_run, get_run, get_all_runs, record_to_dict, \
-    seed_templates_from_files, get_all_templates, get_template_by_name, template_record_to_dict
+    seed_templates_from_files, get_all_templates, get_template_by_name, template_record_to_dict, \
+    save_custom_template, get_template_versions, get_custom_templates
 init_db()
 seed_templates_from_files()
 
@@ -453,15 +454,37 @@ def customize_template(req: CustomizationRequest):
         return {"customized_template": t.data}
     raise HTTPException(status_code=404, detail="Template not found")
 
+class SaveCustomTemplateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    template_json: Dict[str, Any]
+    parent_name: Optional[str] = None
+    sample_prompt: Optional[str] = None
+
 @app.post("/save_template")
-def save_template(info: TemplateInfo, version: Optional[str] = None):
+def save_template_endpoint(req: SaveCustomTemplateRequest):
+    """Save a user-customized template with versioning. Auto-increments version for same name."""
     try:
-        fname = template_manager.save_template(info.name, info.example or {}, version=version, description=info.description)
-        return {"status": "saved", "filename": fname}
+        result = save_custom_template(
+            name=req.name,
+            description=req.description or "",
+            template_json_obj=req.template_json,
+            parent_name=req.parent_name,
+            sample_prompt=req.sample_prompt,
+        )
+        return {"status": "saved", "template": result}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/templates/custom")
+def list_custom_templates():
+    """Return all user-saved/customized templates."""
+    return get_custom_templates()
 
+@app.get("/templates/versions/{base_name}")
+def list_template_versions(base_name: str):
+    """Return all versions of a template family."""
+    return get_template_versions(base_name)
 
 def _run_workflow_async(run_id, config_json):
     import time as _t

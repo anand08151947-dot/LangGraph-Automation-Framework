@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { TemplateInfo } from '../types';
 import { useWorkflowBuilder } from '../hooks/useWorkflowBuilder';
-import { saveTemplate, orchestrateAsync, getStatus } from '../services/api';
+import { saveTemplate, orchestrateAsync, getStatus, getCustomTemplates, getTemplateVersions } from '../services/api';
 
 // ── Local Types ──────────────────────────────────────────────────────────────
 
@@ -11,10 +11,125 @@ interface BuilderProps {
 }
 
 type NodeType = 'agent' | 'tool_node' | 'conditional' | 'human_node';
+type GuardrailAction = 'block' | 'redact' | 'approve';
+type OutputFormat = 'text' | 'json' | 'markdown';
+type OnFailure = 'retry' | 'error' | 'warn';
 
 interface RoutingRule {
   condition: string;
   next: string;
+}
+
+// ── Per-node LLM configuration ────────────────────────────────────────────────
+interface LlmConfig {
+  temperature?: number;   // 0.0–2.0; default 0.7
+  max_tokens?: number;    // default 1024
+  model?: string;         // null = use global default
+}
+
+// ── Context source for a node ─────────────────────────────────────────────────
+type ContextSourceType = 'previous_node' | 'stm' | 'ltm' | 'pre_llm';
+interface ContextSource {
+  type: ContextSourceType;
+  label?: string;         // display label for this source (used in synthesis headers)
+  node_id?: string;       // previous_node: inject output of a specific node (blank = last)
+  keys?: string[];        // stm: which state keys to inject (blank = all)
+  query?: string;         // ltm: keyword filter for LTM entries
+  limit?: number;         // ltm: max entries to inject (default 5)
+  result_id?: string;     // pre_llm: specific tool call id to inject (blank = all)
+}
+
+// ── Synthesis config — how to consolidate multiple context sources ─────────────
+type SynthesisStrategy = 'concatenate' | 'structured' | 'summarize';
+interface SynthesisConfig {
+  strategy?: SynthesisStrategy;
+  prompt_template?: string; // custom instruction for 'summarize' strategy
+}
+
+// ── Input context guardrail config ────────────────────────────────────────────
+type ContextLengthStrategy = 'truncate' | 'summarize' | 'error';
+interface InputGuardrailCheck {
+  enabled: boolean;
+  action?: GuardrailAction;
+}
+interface InputGuardrailsConfig {
+  pii?: InputGuardrailCheck;
+  prompt_injection?: InputGuardrailCheck;
+  secrets_detection?: InputGuardrailCheck;
+  context_length?: { enabled: boolean; max_chars?: number; on_exceed?: ContextLengthStrategy };
+  profanity?: InputGuardrailCheck;
+  data_classification?: InputGuardrailCheck;
+  encoding_sanitization?: { enabled: boolean };
+  language_enforcement?: { enabled: boolean; expected_language?: string; action?: GuardrailAction };
+}
+
+interface NodeContext {
+  sources?: ContextSource[];
+  inject_as?: 'system' | 'user';
+  synthesis?: SynthesisConfig;
+  input_guardrails?: InputGuardrailsConfig;
+}
+
+// ── Expected output schema for a node ────────────────────────────────────────
+interface ValidationRule {
+  field: string;
+  operator: '>=' | '<=' | '>' | '<' | '==' | '!=';
+  value: string | number;
+}
+interface OutputSchema {
+  format?: OutputFormat;
+  state_key?: string;         // write result to this state variable
+  required_fields?: string[]; // must be present in JSON output
+  validation?: {
+    rules?: ValidationRule[];
+    on_failure?: OnFailure;
+  };
+}
+
+// ── Validation config (standalone, merged with output_schema at runtime) ──────
+interface NodeValidation {
+  enabled?: boolean;
+  required_fields?: string[];
+  rules?: ValidationRule[];
+  on_failure?: OnFailure;
+}
+
+// ── Per-check guardrail config ────────────────────────────────────────────────
+interface GuardrailCheck {
+  enabled: boolean;
+  action: GuardrailAction;
+  checks?: string[];  // for regulated_advice: ["medical","legal","financial"]
+}
+interface GuardrailsConfig {
+  pii?: GuardrailCheck;
+  harmful_content?: GuardrailCheck;
+  self_harm?: GuardrailCheck;
+  hate_speech?: GuardrailCheck;
+  regulated_advice?: GuardrailCheck & { checks?: string[] };
+}
+
+// ── Pre-LLM: Tool calls + RAG executed before LLM, results feed into context ─
+interface ToolCallConfig {
+  id?: string;              // optional label for this call
+  tool: string;             // MCP or registered tool name
+  input_template: string;   // {state.VAR} placeholders allowed
+  output_var?: string;      // write result to state variable
+  inject_into_context?: boolean; // default true
+}
+type RagProvider = 'ltm' | 'chroma' | 'milvus' | 'pinecone' | 'weaviate' | 'local';
+interface RagConfig {
+  enabled: boolean;
+  provider?: RagProvider;
+  collection?: string;
+  query_template?: string;  // {state.VAR} allowed
+  top_k?: number;
+  score_threshold?: number;
+  output_var?: string;
+  inject_into_context?: boolean;
+}
+interface PreLlmConfig {
+  tool_calls?: ToolCallConfig[];
+  rag?: RagConfig;
 }
 
 interface NodeConfig {
@@ -27,12 +142,20 @@ interface NodeConfig {
   routing_logic?: RoutingRule[];
   tools?: string[];
   memory_access?: string[];
+  // ── Per-node advanced fields ─────────────────────────────────────────────
+  pre_llm?: PreLlmConfig;
+  llm_config?: LlmConfig;
+  context?: NodeContext;
+  output_schema?: OutputSchema;
+  validation?: NodeValidation;
+  guardrails?: GuardrailsConfig;
 }
 
 interface EdgeConfig {
   from: string;
   to: string;
   condition?: string;
+  label?: string;
 }
 
 interface McpServer {
@@ -41,16 +164,22 @@ interface McpServer {
   endpoint?: string;
   command?: string;
   args?: string;
+  description?: string;
+  timeout_ms?: number;
+  auth_header?: string;
 }
 
 interface StateVar {
   name: string;
-  type: 'string' | 'integer' | 'float' | 'boolean';
+  type: 'string' | 'integer' | 'float' | 'boolean' | 'list' | 'dict';
+  description?: string;
+  default_value?: string;
 }
 
 interface ParallelGroup {
   group: string;
   nodes: string;
+  timeout_ms?: number;
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -247,13 +376,343 @@ const HELP: Record<string, { title: string; items: { icon: string; label: string
   },
 };
 
+// ── Condition Builder ──────────────────────────────────────────────────────────
+// Generates condition strings from state variables with smart operator suggestions.
+
+interface StateVarMeta { name: string; type: 'string' | 'integer' | 'float' | 'boolean' | 'list' | 'dict'; }
+
+const OPS_BY_TYPE: Record<string, { op: string; label: string; valuePlaceholder: string; values?: string[] }[]> = {
+  string:  [
+    { op: "==", label: "equals", valuePlaceholder: "'value'" },
+    { op: "!=", label: "not equals", valuePlaceholder: "'value'" },
+  ],
+  integer: [
+    { op: "==", label: "equals", valuePlaceholder: "0" },
+    { op: ">",  label: "greater than", valuePlaceholder: "0" },
+    { op: ">=", label: ">=", valuePlaceholder: "0" },
+    { op: "<",  label: "less than", valuePlaceholder: "0" },
+    { op: "<=", label: "<=", valuePlaceholder: "0" },
+  ],
+  float: [
+    { op: ">=", label: ">=", valuePlaceholder: "0.7" },
+    { op: ">",  label: ">", valuePlaceholder: "0.7" },
+    { op: "<",  label: "<", valuePlaceholder: "0.7" },
+    { op: "<=", label: "<=", valuePlaceholder: "0.7" },
+    { op: "==", label: "==", valuePlaceholder: "1.0" },
+  ],
+  boolean: [
+    { op: "== true",  label: "is true",  valuePlaceholder: "", values: ["true"] },
+    { op: "== false", label: "is false", valuePlaceholder: "", values: ["false"] },
+  ],
+};
+
+const CONDITION_EXAMPLES = [
+  { label: "task == 'research'",       desc: "String equality" },
+  { label: "task == 'code'",           desc: "String equality" },
+  { label: "confidence_score >= 0.7",  desc: "Float threshold (pass)" },
+  { label: "confidence_score < 0.7",   desc: "Float threshold (fail)" },
+  { label: "retry_count > 3",          desc: "Integer counter" },
+  { label: "missing_data == true",     desc: "Boolean flag" },
+  { label: "approval_required == true",desc: "Boolean flag" },
+  { label: "resolved == false",        desc: "Boolean flag" },
+];
+
+const ConditionBuilder: React.FC<{
+  value: string;
+  onChange: (v: string) => void;
+  stateVars: StateVarMeta[];
+  placeholder?: string;
+}> = ({ value, onChange, stateVars, placeholder }) => {
+  const [showBuilder, setShowBuilder] = useState(false);
+  const [selVar, setSelVar] = useState('');
+  const [selOp, setSelOp] = useState('');
+  const [selVal, setSelVal] = useState('');
+  const [showExamples, setShowExamples] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const selectedVarMeta = stateVars.find(v => v.name === selVar);
+  const ops = selectedVarMeta ? OPS_BY_TYPE[selectedVarMeta.type] ?? [] : [];
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setShowBuilder(false);
+        setShowExamples(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const applyBuilt = () => {
+    if (!selVar || !selOp) return;
+    const isBoolean = selectedVarMeta?.type === 'boolean';
+    const cond = isBoolean ? `${selVar} ${selOp}` : `${selVar} ${selOp} ${selVal}`;
+    onChange(cond.trim());
+    setShowBuilder(false);
+    setSelVar(''); setSelOp(''); setSelVal('');
+  };
+
+  const handleVarChange = (varName: string) => {
+    setSelVar(varName);
+    setSelOp('');
+    setSelVal('');
+    // Pre-select first op for the type
+    const meta = stateVars.find(v => v.name === varName);
+    if (meta) {
+      const firstOp = OPS_BY_TYPE[meta.type]?.[0];
+      if (firstOp) setSelOp(firstOp.op);
+    }
+  };
+
+  return (
+    <div className="flex gap-1.5 items-center flex-1 relative" ref={ref}>
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder ?? "condition (optional)"}
+        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all font-mono"
+      />
+      {/* Builder toggle */}
+      {stateVars.length > 0 && (
+        <Tooltip text="Build condition from state variables">
+          <button
+            onClick={() => { setShowBuilder(b => !b); setShowExamples(false); }}
+            className={`flex-shrink-0 w-8 h-8 rounded-lg border flex items-center justify-center transition-colors ${showBuilder ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-200 text-slate-400 hover:border-indigo-400 hover:text-indigo-600'}`}>
+            <i className="fas fa-wand-magic-sparkles text-xs"></i>
+          </button>
+        </Tooltip>
+      )}
+      {/* Examples toggle */}
+      <Tooltip text="Show condition examples">
+        <button
+          onClick={() => { setShowExamples(b => !b); setShowBuilder(false); }}
+          className={`flex-shrink-0 w-8 h-8 rounded-lg border flex items-center justify-center transition-colors ${showExamples ? 'bg-amber-500 border-amber-500 text-white' : 'bg-white border-slate-200 text-slate-400 hover:border-amber-400 hover:text-amber-600'}`}>
+          <i className="fas fa-lightbulb text-xs"></i>
+        </button>
+      </Tooltip>
+
+      {/* Builder dropdown */}
+      {showBuilder && (
+        <div className="absolute top-full left-0 mt-1 z-50 bg-white border border-indigo-200 rounded-xl shadow-xl p-4 min-w-[340px]">
+          <p className="text-xs font-bold text-indigo-700 uppercase tracking-widest mb-3 flex items-center gap-2">
+            <i className="fas fa-wand-magic-sparkles text-indigo-400"></i> Condition Builder
+          </p>
+          <div className="space-y-2">
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">State Variable</label>
+              <select value={selVar} onChange={e => handleVarChange(e.target.value)}
+                className="w-full mt-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none">
+                <option value="">— pick variable —</option>
+                {stateVars.map(v => (
+                  <option key={v.name} value={v.name}>{v.name} ({v.type})</option>
+                ))}
+              </select>
+            </div>
+            {selVar && (
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Operator</label>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {ops.map(o => (
+                    <button key={o.op} onClick={() => setSelOp(o.op)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors ${selOp === o.op ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-indigo-400'}`}>
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {selVar && selOp && selectedVarMeta?.type !== 'boolean' && (
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Value</label>
+                <input value={selVal} onChange={e => setSelVal(e.target.value)}
+                  placeholder={ops.find(o => o.op === selOp)?.valuePlaceholder ?? 'value'}
+                  className="w-full mt-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:border-indigo-400" />
+              </div>
+            )}
+            {selVar && selOp && (
+              <div className="pt-1">
+                <div className="text-[10px] text-slate-400 mb-2 font-mono bg-slate-50 rounded-lg px-3 py-2 border border-slate-200">
+                  Preview: <span className="text-indigo-600 font-bold">
+                    {selectedVarMeta?.type === 'boolean' ? `${selVar} ${selOp}` : `${selVar} ${selOp} ${selVal || '…'}`}
+                  </span>
+                </div>
+                <button onClick={applyBuilt}
+                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs transition-colors">
+                  Apply Condition
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Examples dropdown */}
+      {showExamples && (
+        <div className="absolute top-full left-0 mt-1 z-50 bg-white border border-amber-200 rounded-xl shadow-xl p-3 min-w-[320px]">
+          <p className="text-xs font-bold text-amber-700 uppercase tracking-widest mb-2 flex items-center gap-2">
+            <i className="fas fa-lightbulb text-amber-400"></i> Common Conditions
+          </p>
+          <p className="text-[10px] text-slate-500 mb-3">Click to use. Supported operators: ==, !=, &lt;, &gt;, &lt;=, &gt;=, == true, == false</p>
+          <div className="space-y-1">
+            {[...CONDITION_EXAMPLES, ...stateVars.flatMap(v => {
+              if (v.type === 'boolean') return [
+                { label: `${v.name} == true`, desc: `When ${v.name} is set` },
+                { label: `${v.name} == false`, desc: `When ${v.name} is not set` },
+              ];
+              if (v.type === 'float') return [{ label: `${v.name} >= 0.7`, desc: 'Float threshold' }];
+              if (v.type === 'integer') return [{ label: `${v.name} > 3`, desc: 'Integer limit' }];
+              return [];
+            })].map((ex, idx) => (
+              <button key={idx} onClick={() => { onChange(ex.label); setShowExamples(false); }}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-amber-50 transition-colors group text-left">
+                <span className="font-mono text-xs text-slate-800 group-hover:text-amber-700">{ex.label}</span>
+                <span className="text-[10px] text-slate-400 ml-2 flex-shrink-0">{ex.desc}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Save As Modal ──────────────────────────────────────────────────────────────
+
+const SaveAsModal: React.FC<{
+  open: boolean;
+  initialName: string;
+  initialDescription: string;
+  parentName?: string;
+  versions: any[];
+  onClose: () => void;
+  onSave: (name: string, description: string) => void;
+  saving: boolean;
+}> = ({ open, initialName, initialDescription, parentName, versions, onClose, onSave, saving }) => {
+  const [name, setName] = useState(initialName);
+  const [desc, setDesc] = useState(initialDescription);
+
+  useEffect(() => { setName(initialName); setDesc(initialDescription); }, [initialName, initialDescription, open]);
+
+  if (!open) return null;
+
+  const latestVersion = versions.reduce((max, v) => Math.max(max, v.version ?? 1), 0);
+  const nextVersion = latestVersion + 1;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+          <div>
+            <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <i className="fas fa-save text-indigo-500"></i> Save Template
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">Persist this workflow for future use and further customization</p>
+          </div>
+          <button onClick={onClose} className="text-slate-300 hover:text-slate-600 transition-colors">
+            <i className="fas fa-xmark text-lg"></i>
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          {parentName && (
+            <div className="flex items-center gap-2 p-3 bg-indigo-50 border border-indigo-100 rounded-xl text-xs text-indigo-700">
+              <i className="fas fa-code-branch"></i>
+              <span>Derived from: <strong>{parentName}</strong></span>
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Template Name / Identifier</label>
+            <input value={name} onChange={e => setName(e.target.value)}
+              className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all" />
+            <p className="text-[10px] text-slate-400 mt-1">Use underscores, no spaces. A new name creates a new entry; the same name increments the version.</p>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">Description</label>
+            <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={3}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 transition-all resize-none" />
+          </div>
+          {versions.length > 0 && (
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Existing Versions</label>
+              <div className="space-y-1.5 max-h-32 overflow-auto">
+                {versions.map((v, i) => (
+                  <div key={i} className="flex items-center justify-between px-3 py-2 bg-slate-50 rounded-lg border border-slate-200 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-slate-700">{v.name}</span>
+                      {v.is_custom && <span className="px-1.5 py-0.5 bg-indigo-100 text-indigo-600 rounded text-[10px] font-bold">custom</span>}
+                    </div>
+                    <div className="flex items-center gap-2 text-slate-400">
+                      <span className="font-bold text-indigo-600">v{v.version ?? 1}</span>
+                      {v.updated_at && <span>{new Date(v.updated_at).toLocaleDateString()}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {name === initialName && (
+                <p className="text-[10px] text-amber-600 mt-1.5 flex items-center gap-1">
+                  <i className="fas fa-circle-info"></i>
+                  Saving with same name will create <strong>v{nextVersion}</strong>
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex gap-3 px-6 py-4 border-t border-slate-100">
+          <button onClick={onClose} className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-sm transition-colors">
+            Cancel
+          </button>
+          <button onClick={() => onSave(name, desc)} disabled={!name.trim() || saving}
+            className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 transition-colors">
+            {saving ? <><i className="fas fa-spinner fa-spin"></i> Saving…</> : <><i className="fas fa-save"></i> Save Template</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── NodeSubSection — collapsible sub-panel for NodeDetailPanel ────────────────
+
+const NodeSubSection: React.FC<{
+  icon: string;
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}> = ({ icon, title, hint, children }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-slate-200 rounded-xl overflow-hidden">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2.5 px-3 py-2.5 bg-slate-50 hover:bg-slate-100 transition-colors text-left">
+        <i className={`fas ${icon} text-indigo-400 text-xs w-4 text-center flex-shrink-0`}></i>
+        <span className="text-xs font-bold text-slate-600 flex-1">{title}</span>
+        {hint && (
+          <Tooltip text={hint}>
+            <span className="text-slate-300 hover:text-indigo-400 text-xs mr-1">
+              <i className="fas fa-circle-info"></i>
+            </span>
+          </Tooltip>
+        )}
+        <i className={`fas fa-chevron-${open ? 'up' : 'down'} text-slate-300 text-[10px]`}></i>
+      </button>
+      {open && (
+        <div className="p-3 space-y-3 bg-white">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Node Detail Panel ─────────────────────────────────────────────────────────
 
 const NodeDetailPanel: React.FC<{
   node: NodeConfig;
   onChange: (n: NodeConfig) => void;
   stateKeys: string[];
-}> = ({ node, onChange, stateKeys }) => {
+  stateVars: StateVarMeta[];
+}> = ({ node, onChange, stateKeys, stateVars }) => {
   const [toolInput, setToolInput] = useState('');
 
   const addTool = () => {
@@ -342,7 +801,7 @@ const NodeDetailPanel: React.FC<{
       {(node.type === 'conditional' || node.type === 'agent') && (
         <div>
           <div className="flex items-center justify-between mb-2">
-            <FieldLabel hint="Conditional rules that determine which node to go to next">Routing Logic</FieldLabel>
+            <FieldLabel hint="Conditional rules that determine which node to go to next. Each rule is evaluated in order; the first matching condition determines the next node.">Routing Logic</FieldLabel>
             <button onClick={addRoute} className="text-xs px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg transition-colors">
               + Add Rule
             </button>
@@ -350,9 +809,14 @@ const NodeDetailPanel: React.FC<{
           <div className="space-y-2">
             {(node.routing_logic ?? []).map((r, i) => (
               <div key={i} className="flex gap-2 items-center">
-                <Input value={r.condition} onChange={e => updateRoute(i, { ...r, condition: e.target.value })} placeholder="condition (e.g. task == 'research')" />
-                <span className="text-slate-400 text-sm">→</span>
-                <Input value={r.next} onChange={e => updateRoute(i, { ...r, next: e.target.value })} placeholder="next node id" className="w-36" />
+                <ConditionBuilder
+                  value={r.condition}
+                  onChange={v => updateRoute(i, { ...r, condition: v })}
+                  stateVars={stateVars}
+                  placeholder="condition (e.g. task == 'research')"
+                />
+                <span className="text-slate-400 text-sm flex-shrink-0">→</span>
+                <Input value={r.next} onChange={e => updateRoute(i, { ...r, next: e.target.value })} placeholder="next node id" className="w-36 flex-shrink-0" />
                 <button onClick={() => removeRoute(i)} className="text-slate-300 hover:text-rose-500 transition-colors flex-shrink-0">
                   <i className="fas fa-xmark"></i>
                 </button>
@@ -398,6 +862,688 @@ const NodeDetailPanel: React.FC<{
           ))}
         </div>
       </div>
+
+      {/* ── LLM Config (agent only) ─────────────────────────────────────────── */}
+      {node.type === 'agent' && (
+        <NodeSubSection icon="fa-sliders" title="LLM Config"
+          hint="Per-node LLM parameters. Leave blank to use the global default from Settings.">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <FieldLabel hint="Controls randomness: 0=deterministic, 1=balanced, 2=creative">Temperature</FieldLabel>
+              <div className="flex items-center gap-3">
+                <input type="range" min="0" max="2" step="0.05"
+                  value={node.llm_config?.temperature ?? 0.7}
+                  onChange={e => onChange({ ...node, llm_config: { ...node.llm_config, temperature: parseFloat(e.target.value) } })}
+                  className="flex-1 h-1.5 accent-indigo-600" />
+                <span className="text-xs font-mono text-slate-600 w-8 text-right">
+                  {(node.llm_config?.temperature ?? 0.7).toFixed(2)}
+                </span>
+              </div>
+            </div>
+            <div>
+              <FieldLabel hint="Maximum tokens the LLM can output for this node">Max Tokens</FieldLabel>
+              <Input type="number" min={64} max={16384}
+                value={node.llm_config?.max_tokens ?? ''}
+                onChange={e => onChange({ ...node, llm_config: { ...node.llm_config, max_tokens: parseInt(e.target.value) || undefined } })}
+                placeholder="1024 (default)" />
+            </div>
+          </div>
+          <div>
+            <FieldLabel hint="Override the model for this node only (e.g. gpt-4o, mistral-7b). Leave blank for global default.">Model Override</FieldLabel>
+            <Input value={node.llm_config?.model ?? ''}
+              onChange={e => onChange({ ...node, llm_config: { ...node.llm_config, model: e.target.value || undefined } })}
+              placeholder="e.g. gpt-4o or mistral-7b (blank = use default)" />
+          </div>
+        </NodeSubSection>
+      )}
+
+      {/* ── Pre-LLM: Tool Calls ──────────────────────────────────────────────── */}
+      {node.type === 'agent' && (
+        <NodeSubSection icon="fa-bolt" title="Pre-LLM: Tool Calls"
+          hint="Execute MCP or registered tools BEFORE the LLM call. Results are injected as grounding material into the prompt. Use {state.VAR} to reference workflow state variables in the input template.">
+          <div className="space-y-3">
+            {(node.pre_llm?.tool_calls ?? []).map((tc, ti) => (
+              <div key={ti} className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">Tool Call #{ti + 1}</span>
+                  <button onClick={() => {
+                    const calls = [...(node.pre_llm?.tool_calls ?? [])];
+                    calls.splice(ti, 1);
+                    onChange({ ...node, pre_llm: { ...node.pre_llm, tool_calls: calls } });
+                  }} className="text-red-400 hover:text-red-600 text-xs"><i className="fas fa-trash-can"></i></button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <FieldLabel hint="Optional display name for this tool call">Label (id)</FieldLabel>
+                    <input value={tc.id ?? ''} placeholder="e.g. search_call"
+                      onChange={e => {
+                        const calls = [...(node.pre_llm?.tool_calls ?? [])];
+                        calls[ti] = { ...tc, id: e.target.value || undefined };
+                        onChange({ ...node, pre_llm: { ...node.pre_llm, tool_calls: calls } });
+                      }}
+                      className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                  </div>
+                  <div>
+                    <FieldLabel hint="MCP tool name or registered tool. Must match a key in mcp_servers or tool_registry.">Tool Name *</FieldLabel>
+                    <input value={tc.tool} placeholder="e.g. web_search"
+                      onChange={e => {
+                        const calls = [...(node.pre_llm?.tool_calls ?? [])];
+                        calls[ti] = { ...tc, tool: e.target.value };
+                        onChange({ ...node, pre_llm: { ...node.pre_llm, tool_calls: calls } });
+                      }}
+                      className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                  </div>
+                </div>
+                <div>
+                  <FieldLabel hint="What to send to the tool. Use {state.VARNAME} to inject state variables. Example: 'Search for: {state.task}'">Input Template *</FieldLabel>
+                  <input value={tc.input_template} placeholder="e.g. {state.task}"
+                    onChange={e => {
+                      const calls = [...(node.pre_llm?.tool_calls ?? [])];
+                      calls[ti] = { ...tc, input_template: e.target.value };
+                      onChange({ ...node, pre_llm: { ...node.pre_llm, tool_calls: calls } });
+                    }}
+                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <FieldLabel hint="Optional: write tool result to this state variable so other nodes can access it.">Output → State Var</FieldLabel>
+                    <input value={tc.output_var ?? ''} placeholder="e.g. search_results"
+                      onChange={e => {
+                        const calls = [...(node.pre_llm?.tool_calls ?? [])];
+                        calls[ti] = { ...tc, output_var: e.target.value || undefined };
+                        onChange({ ...node, pre_llm: { ...node.pre_llm, tool_calls: calls } });
+                      }}
+                      className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                  </div>
+                  <div className="flex items-end pb-1">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs">
+                      <input type="checkbox" checked={tc.inject_into_context !== false}
+                        onChange={e => {
+                          const calls = [...(node.pre_llm?.tool_calls ?? [])];
+                          calls[ti] = { ...tc, inject_into_context: e.target.checked };
+                          onChange({ ...node, pre_llm: { ...node.pre_llm, tool_calls: calls } });
+                        }} className="w-3.5 h-3.5 rounded" />
+                      <span className="text-slate-600">Inject into LLM context</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            ))}
+            <button onClick={() => {
+              const calls = [...(node.pre_llm?.tool_calls ?? [])];
+              calls.push({ tool: '', input_template: '{state.task}', inject_into_context: true });
+              onChange({ ...node, pre_llm: { ...node.pre_llm, tool_calls: calls } });
+            }} className="text-xs px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg transition-colors">
+              + Add Tool Call
+            </button>
+          </div>
+        </NodeSubSection>
+      )}
+
+      {/* ── Pre-LLM: RAG / Semantic Search ───────────────────────────────────── */}
+      {node.type === 'agent' && (
+        <NodeSubSection icon="fa-magnifying-glass-chart" title="Pre-LLM: RAG / Semantic Search"
+          hint="Run a semantic similarity search BEFORE the LLM call. Retrieved document chunks are injected as grounding context. Supports LTM (built-in), Chroma, Milvus, Pinecone, and Weaviate.">
+          {(() => {
+            const rag = node.pre_llm?.rag ?? {} as RagConfig;
+            const setRag = (patch: Partial<RagConfig>) =>
+              onChange({ ...node, pre_llm: { ...node.pre_llm, rag: { ...rag, ...patch } } });
+            return (
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 cursor-pointer text-xs">
+                  <input type="checkbox" checked={!!rag.enabled}
+                    onChange={e => setRag({ enabled: e.target.checked })}
+                    className="w-3.5 h-3.5 rounded" />
+                  <span className={`font-bold ${rag.enabled ? 'text-indigo-600' : 'text-slate-500'}`}>Enable RAG search for this node</span>
+                </label>
+                {rag.enabled && (
+                  <div className="space-y-2.5 pl-1">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <FieldLabel hint="Vector store backend. 'ltm' uses the built-in LTM memory. Others require external SDK wiring in the backend.">Provider</FieldLabel>
+                        <Select value={rag.provider ?? 'ltm'} onChange={e => setRag({ provider: e.target.value as RagProvider })}>
+                          <option value="ltm">LTM (built-in)</option>
+                          <option value="chroma">ChromaDB</option>
+                          <option value="milvus">Milvus</option>
+                          <option value="pinecone">Pinecone</option>
+                          <option value="weaviate">Weaviate</option>
+                          <option value="local">Local (file)</option>
+                        </Select>
+                      </div>
+                      <div>
+                        <FieldLabel hint="Collection or index name in the vector store.">Collection / Index</FieldLabel>
+                        <input value={rag.collection ?? ''} placeholder="e.g. enterprise_memory"
+                          onChange={e => setRag({ collection: e.target.value })}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                      </div>
+                    </div>
+                    <div>
+                      <FieldLabel hint="Search query template. Use {state.VAR} to inject state variables. Example: '{state.task} context'">Query Template *</FieldLabel>
+                      <input value={rag.query_template ?? ''} placeholder="e.g. {state.task}"
+                        onChange={e => setRag({ query_template: e.target.value })}
+                        className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <FieldLabel hint="Number of top matching chunks to retrieve (default 5).">Top-K</FieldLabel>
+                        <input type="number" min={1} max={50} value={rag.top_k ?? 5}
+                          onChange={e => setRag({ top_k: parseInt(e.target.value) || 5 })}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                      </div>
+                      <div>
+                        <FieldLabel hint="Minimum similarity score to include a chunk (0.0 = no filter, 1.0 = exact match).">Min Score</FieldLabel>
+                        <input type="number" min={0} max={1} step={0.05} value={rag.score_threshold ?? 0}
+                          onChange={e => setRag({ score_threshold: parseFloat(e.target.value) || 0 })}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                      </div>
+                      <div>
+                        <FieldLabel hint="Optional: write retrieved chunks to this state variable.">Output → State Var</FieldLabel>
+                        <input value={rag.output_var ?? ''} placeholder="e.g. rag_results"
+                          onChange={e => setRag({ output_var: e.target.value || undefined })}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                      </div>
+                    </div>
+                    <label className="flex items-center gap-2 cursor-pointer text-xs">
+                      <input type="checkbox" checked={rag.inject_into_context !== false}
+                        onChange={e => setRag({ inject_into_context: e.target.checked })}
+                        className="w-3.5 h-3.5 rounded" />
+                      <span className="text-slate-600">Inject retrieved chunks into LLM context</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </NodeSubSection>
+      )}
+
+      {/* ── Context Sources (agent only) ────────────────────────────────────── */}
+      {node.type === 'agent' && (
+        <NodeSubSection icon="fa-layer-group" title="Context Sources"
+          hint={[
+            "Defines what context is assembled and injected before the LLM call. Sources are collected in order and combined according to the synthesis strategy.",
+            "",
+            "Source types:",
+            "• previous_node — inject the output of a specific prior node (leave node ID blank for the most recent message). Use this to chain agent outputs.",
+            "• stm — inject Short-Term Memory keys from the current workflow state. Good for passing task metadata, scores, or flags between nodes.",
+            "• ltm — inject Long-Term Memory entries (SQLite history). Use a keyword filter to retrieve relevant past sessions.",
+            "• pre_llm — inject results from Tool Calls or RAG searches that ran in the Pre-LLM steps above. Use result_id to pick a specific call, or leave blank for all results.",
+            "",
+            "Label: Give each source a display name (shown in synthesis headers and artifact logs).",
+            "",
+            "Synthesis (multi-source): When you have 2+ sources:",
+            "• concatenate — each chunk is injected as a separate labelled block (default, safe for most cases).",
+            "• structured — all chunks merged into one numbered message under '--- Consolidated Context ---'.",
+            "• summarize — all chunks prefixed with a synthesis instruction so the LLM consolidates them before answering. You can customize the instruction.",
+            "",
+            "Inject as: controls whether context appears as a 'user' turn or a 'system' turn in the LLM conversation.",
+          ].join("\n")}>
+          <div className="space-y-2">
+            {(node.context?.sources ?? []).map((src, si) => {
+              const updateSrc = (patch: Partial<ContextSource>) => {
+                const sources = [...(node.context?.sources ?? [])];
+                sources[si] = { ...src, ...patch };
+                onChange({ ...node, context: { ...node.context, sources } });
+              };
+              return (
+                <div key={si} className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                  {/* Row 1: type + label + delete */}
+                  <div className="flex gap-2 items-center">
+                    <Select value={src.type}
+                      onChange={e => updateSrc({ type: e.target.value as ContextSourceType, node_id: undefined, keys: undefined, query: undefined, result_id: undefined })}
+                      className="w-36 flex-shrink-0 text-xs">
+                      <option value="previous_node">previous_node</option>
+                      <option value="stm">stm (short-term)</option>
+                      <option value="ltm">ltm (long-term)</option>
+                      <option value="pre_llm">pre_llm (tool/RAG)</option>
+                    </Select>
+                    <Input value={src.label ?? ''} placeholder="label (optional)"
+                      className="flex-1 text-xs"
+                      onChange={e => updateSrc({ label: e.target.value || undefined })} />
+                    <button onClick={() => {
+                      const sources = (node.context?.sources ?? []).filter((_, i) => i !== si);
+                      onChange({ ...node, context: { ...node.context, sources } });
+                    }} className="text-slate-300 hover:text-rose-500 transition-colors flex-shrink-0">
+                      <i className="fas fa-xmark text-xs"></i>
+                    </button>
+                  </div>
+                  {/* Row 2: type-specific config */}
+                  {src.type === 'previous_node' && (
+                    <div className="ml-1">
+                      <FieldLabel hint="The node ID whose output you want to inject. Leave blank to use the most recent message from any node.">Node ID (blank = last output)</FieldLabel>
+                      <Input value={src.node_id ?? ''} placeholder="e.g. ResearchAgent"
+                        className="text-xs w-full"
+                        onChange={e => updateSrc({ node_id: e.target.value || undefined })} />
+                    </div>
+                  )}
+                  {src.type === 'stm' && (
+                    <div className="ml-1">
+                      <FieldLabel hint="Comma-separated list of state variable names to inject. Leave blank to inject all STM keys. Example: task, confidence_score, retry_count">State Keys (blank = all)</FieldLabel>
+                      <Input value={(src.keys ?? []).join(', ')} placeholder="e.g. task, confidence_score"
+                        className="text-xs w-full"
+                        onChange={e => updateSrc({ keys: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
+                    </div>
+                  )}
+                  {src.type === 'ltm' && (
+                    <div className="ml-1 grid grid-cols-2 gap-2">
+                      <div>
+                        <FieldLabel hint="Keyword to filter LTM entries. Only entries containing this word will be injected. Leave blank to inject the most recent entries.">Keyword Filter (optional)</FieldLabel>
+                        <Input value={src.query ?? ''} placeholder="e.g. customer, research"
+                          className="text-xs"
+                          onChange={e => updateSrc({ query: e.target.value || undefined })} />
+                      </div>
+                      <div>
+                        <FieldLabel hint="Maximum number of LTM entries to inject (default 5). Increase for more history, decrease to save tokens.">Max Entries</FieldLabel>
+                        <input type="number" min={1} max={50} value={src.limit ?? 5}
+                          onChange={e => updateSrc({ limit: parseInt(e.target.value) || 5 })}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-mono" />
+                      </div>
+                    </div>
+                  )}
+                  {src.type === 'pre_llm' && (
+                    <div className="ml-1">
+                      <FieldLabel hint="The 'id' field of a specific tool call or RAG config to inject. Leave blank to inject ALL pre-LLM results (tool calls + RAG) into this context source.">Result ID (blank = all pre-LLM results)</FieldLabel>
+                      <Input value={src.result_id ?? ''} placeholder="e.g. search_call (matches tool call id)"
+                        className="text-xs w-full"
+                        onChange={e => updateSrc({ result_id: e.target.value || undefined })} />
+                      {!(node.pre_llm?.tool_calls?.length) && !node.pre_llm?.rag?.enabled && (
+                        <p className="text-[10px] text-amber-500 mt-1 flex items-center gap-1">
+                          <i className="fas fa-triangle-exclamation"></i>
+                          No Pre-LLM steps configured yet — add Tool Calls or RAG above.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Add source + inject_as row */}
+            <div className="flex items-center gap-3 flex-wrap">
+              <button onClick={() => {
+                const sources = [...(node.context?.sources ?? []), { type: 'previous_node' as ContextSourceType }];
+                onChange({ ...node, context: { ...node.context, sources } });
+              }} className="text-xs px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg transition-colors">
+                + Add Source
+              </button>
+              <div className="flex items-center gap-2 ml-auto">
+                <span className="text-[10px] text-slate-400 uppercase tracking-widest">inject as</span>
+                <Select value={node.context?.inject_as ?? 'user'}
+                  onChange={e => onChange({ ...node, context: { ...node.context, inject_as: e.target.value as 'system' | 'user' } })}
+                  className="text-xs py-1">
+                  <option value="user">user message (recommended for grounding)</option>
+                  <option value="system">system message (higher authority)</option>
+                </Select>
+              </div>
+            </div>
+
+            {/* Synthesis — visible when 2+ sources */}
+            {(node.context?.sources ?? []).length >= 1 && (
+              <div className="border-t border-slate-100 pt-3 mt-1">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                  <i className="fas fa-code-merge text-violet-400"></i>
+                  Multi-Source Synthesis
+                  <Tooltip text={[
+                    "When this node has 2 or more context sources, synthesis controls how they are combined before reaching the LLM.",
+                    "",
+                    "concatenate (default): Each source is injected as a separate labelled block. Safe, transparent, and easy to debug.",
+                    "",
+                    "structured: All chunks merged into a single numbered message under '--- Consolidated Context ---'. Good for report-style context.",
+                    "",
+                    "summarize: All chunks prefixed with a synthesis instruction so the LLM consolidates them silently before answering. Best for complex multi-source reasoning. You can customize the instruction prompt.",
+                  ].join("\n")}>
+                    <span className="text-slate-300 hover:text-violet-400 cursor-help"><i className="fas fa-circle-info text-[10px]"></i></span>
+                  </Tooltip>
+                </p>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] text-slate-400 w-16 flex-shrink-0">Strategy</span>
+                    <Select
+                      value={node.context?.synthesis?.strategy ?? 'concatenate'}
+                      onChange={e => onChange({ ...node, context: { ...node.context, synthesis: { ...node.context?.synthesis, strategy: e.target.value as SynthesisStrategy } } })}
+                      className="flex-1 text-xs py-1">
+                      <option value="concatenate">concatenate — separate labelled blocks (default)</option>
+                      <option value="structured">structured — single merged message with numbered sources</option>
+                      <option value="summarize">summarize — LLM consolidates via synthesis instruction</option>
+                    </Select>
+                  </div>
+                  {node.context?.synthesis?.strategy === 'summarize' && (
+                    <div>
+                      <FieldLabel hint="Custom instruction prepended to the combined context. The LLM uses this to synthesize sources before answering. Leave blank for the default instruction.">Custom Synthesis Prompt (optional)</FieldLabel>
+                      <textarea
+                        value={node.context?.synthesis?.prompt_template ?? ''}
+                        onChange={e => onChange({ ...node, context: { ...node.context, synthesis: { ...node.context?.synthesis, prompt_template: e.target.value || undefined } } })}
+                        placeholder="e.g. Review the sources below and extract the most relevant facts before answering. Prioritize the RAG results over memory."
+                        rows={3}
+                        className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-violet-300"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── Context / Input Guardrails ─────────────────────────────── */}
+            <div className="border-t border-slate-100 pt-3 mt-1">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2.5 flex items-center gap-1.5">
+                <i className="fas fa-shield-halved text-amber-400"></i>
+                Context Input Guardrails
+                <Tooltip text="These guardrails are applied to the assembled context BEFORE it reaches the LLM. They protect against prompt injection, credential leakage, PII entering external models, oversized context windows, and more.">
+                  <span className="text-slate-300 hover:text-amber-400 cursor-help"><i className="fas fa-circle-info text-[10px]"></i></span>
+                </Tooltip>
+              </p>
+              <div className="space-y-2">
+                {([
+                  { key: 'pii',              label: 'PII on Input',            desc: 'Redact emails, phones, SSNs before sending to LLM', defaultAction: 'redact' as GuardrailAction, hasAction: true },
+                  { key: 'prompt_injection', label: 'Prompt Injection',        desc: 'Block jailbreaks / "ignore previous instructions"', defaultAction: 'block' as GuardrailAction, hasAction: true },
+                  { key: 'secrets_detection',label: 'Secrets / Credentials',   desc: 'API keys, Bearer tokens, private keys, JWTs', defaultAction: 'block' as GuardrailAction, hasAction: true },
+                  { key: 'profanity',        label: 'Profanity Filter',         desc: 'Filter offensive language in user-sourced context', defaultAction: 'redact' as GuardrailAction, hasAction: true },
+                  { key: 'data_classification', label: 'Data Classification',  desc: 'Block CONFIDENTIAL / SECRET / RESTRICTED markers', defaultAction: 'block' as GuardrailAction, hasAction: true },
+                  { key: 'encoding_sanitization', label: 'Encoding Sanitization', desc: 'Strip HTML tags, null bytes, control characters', defaultAction: null, hasAction: false },
+                ] as const).map(({ key, label, desc, defaultAction, hasAction }) => {
+                  const ig = node.context?.input_guardrails as any ?? {};
+                  const cfg = ig[key] as any;
+                  const isEnabled = !!cfg?.enabled;
+                  const toggle = () => {
+                    const updated = { ...ig, [key]: { ...cfg, enabled: !isEnabled, ...(defaultAction ? { action: defaultAction } : {}) } };
+                    onChange({ ...node, context: { ...node.context, input_guardrails: updated } });
+                  };
+                  const setAction = (action: GuardrailAction) => {
+                    onChange({ ...node, context: { ...node.context, input_guardrails: { ...ig, [key]: { ...cfg, enabled: true, action } } } });
+                  };
+                  return (
+                    <div key={key} className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg border transition-all text-xs ${isEnabled ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                      <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
+                        <input type="checkbox" checked={isEnabled} onChange={toggle} className="w-3.5 h-3.5 rounded flex-shrink-0" />
+                        <div className="min-w-0">
+                          <p className={`font-bold truncate ${isEnabled ? 'text-amber-700' : 'text-slate-500'}`}>{label}</p>
+                          <p className="text-[10px] text-slate-400 truncate">{desc}</p>
+                        </div>
+                      </label>
+                      {isEnabled && hasAction && (
+                        <Select value={cfg?.action ?? defaultAction}
+                          onChange={e => setAction(e.target.value as GuardrailAction)}
+                          className="w-20 flex-shrink-0 text-[10px] py-0.5">
+                          <option value="block">block</option>
+                          <option value="redact">redact</option>
+                          <option value="approve">approve</option>
+                        </Select>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Context Length */}
+                {(() => {
+                  const ig = node.context?.input_guardrails as any ?? {};
+                  const cl = ig.context_length as any ?? {};
+                  return (
+                    <div className={`px-2.5 py-2 rounded-lg border transition-all text-xs ${cl.enabled ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                      <div className="flex items-center gap-2.5 mb-2">
+                        <label className="flex items-center gap-2 cursor-pointer flex-1">
+                          <input type="checkbox" checked={!!cl.enabled}
+                            onChange={e => onChange({ ...node, context: { ...node.context, input_guardrails: { ...ig, context_length: { ...cl, enabled: e.target.checked } } } })}
+                            className="w-3.5 h-3.5 rounded flex-shrink-0" />
+                          <div>
+                            <p className={`font-bold ${cl.enabled ? 'text-amber-700' : 'text-slate-500'}`}>Context Length Limit</p>
+                            <p className="text-[10px] text-slate-400">Cap context size to prevent token budget overrun</p>
+                          </div>
+                        </label>
+                      </div>
+                      {cl.enabled && (
+                        <div className="flex gap-2 items-center ml-5">
+                          <div className="flex items-center gap-1.5 flex-1">
+                            <span className="text-[10px] text-slate-400 flex-shrink-0">Max chars</span>
+                            <input type="number" min={500} max={200000} step={500}
+                              value={cl.max_chars ?? 8000}
+                              onChange={e => onChange({ ...node, context: { ...node.context, input_guardrails: { ...ig, context_length: { ...cl, max_chars: parseInt(e.target.value) || 8000 } } } })}
+                              className="w-24 px-2 py-1 border border-slate-200 rounded text-[11px] font-mono" />
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-slate-400 flex-shrink-0">On exceed</span>
+                            <Select value={cl.on_exceed ?? 'truncate'}
+                              onChange={e => onChange({ ...node, context: { ...node.context, input_guardrails: { ...ig, context_length: { ...cl, on_exceed: e.target.value as ContextLengthStrategy } } } })}
+                              className="text-[10px] py-0.5 w-28">
+                              <option value="truncate">truncate</option>
+                              <option value="summarize">summarize</option>
+                              <option value="error">error (block)</option>
+                            </Select>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Language enforcement */}
+                {(() => {
+                  const ig = node.context?.input_guardrails as any ?? {};
+                  const le = ig.language_enforcement as any ?? {};
+                  return (
+                    <div className={`px-2.5 py-2 rounded-lg border transition-all text-xs ${le.enabled ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                      <div className="flex items-center gap-2.5 mb-2">
+                        <label className="flex items-center gap-2 cursor-pointer flex-1">
+                          <input type="checkbox" checked={!!le.enabled}
+                            onChange={e => onChange({ ...node, context: { ...node.context, input_guardrails: { ...ig, language_enforcement: { ...le, enabled: e.target.checked } } } })}
+                            className="w-3.5 h-3.5 rounded flex-shrink-0" />
+                          <div>
+                            <p className={`font-bold ${le.enabled ? 'text-amber-700' : 'text-slate-500'}`}>Language Enforcement</p>
+                            <p className="text-[10px] text-slate-400">Reject context not in the expected language</p>
+                          </div>
+                        </label>
+                      </div>
+                      {le.enabled && (
+                        <div className="flex gap-2 items-center ml-5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-slate-400">Expected</span>
+                            <Select value={le.expected_language ?? 'en'}
+                              onChange={e => onChange({ ...node, context: { ...node.context, input_guardrails: { ...ig, language_enforcement: { ...le, expected_language: e.target.value } } } })}
+                              className="text-[10px] py-0.5 w-24">
+                              <option value="en">English (en)</option>
+                              <option value="fr">French (fr)</option>
+                              <option value="de">German (de)</option>
+                              <option value="es">Spanish (es)</option>
+                              <option value="zh">Chinese (zh)</option>
+                            </Select>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-slate-400">Action</span>
+                            <Select value={le.action ?? 'block'}
+                              onChange={e => onChange({ ...node, context: { ...node.context, input_guardrails: { ...ig, language_enforcement: { ...le, action: e.target.value } } } })}
+                              className="text-[10px] py-0.5 w-20">
+                              <option value="block">block</option>
+                              <option value="approve">log only</option>
+                            </Select>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        </NodeSubSection>
+      )}
+
+      {/* ── Output Schema (agent only) ───────────────────────────────────────── */}
+      {node.type === 'agent' && (
+        <NodeSubSection icon="fa-file-code" title="Output Schema"
+          hint="Define the expected output format from the LLM. JSON format enables field validation. state_key writes the result into workflow state.">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <FieldLabel hint="Expected output format">Format</FieldLabel>
+              <Select value={node.output_schema?.format ?? 'text'}
+                onChange={e => onChange({ ...node, output_schema: { ...node.output_schema, format: e.target.value as OutputFormat } })}>
+                <option value="text">text (freeform)</option>
+                <option value="json">json (validated)</option>
+                <option value="markdown">markdown</option>
+              </Select>
+            </div>
+            <div>
+              <FieldLabel hint="Write the LLM output to this state variable (must match state_schema key)">State Key</FieldLabel>
+              <Select value={node.output_schema?.state_key ?? ''}
+                onChange={e => onChange({ ...node, output_schema: { ...node.output_schema, state_key: e.target.value || undefined } })}>
+                <option value="">— none —</option>
+                {stateKeys.map(k => <option key={k} value={k}>{k}</option>)}
+              </Select>
+            </div>
+          </div>
+          {node.output_schema?.format === 'json' && (
+            <div>
+              <FieldLabel hint="Comma-separated field names that must be present in the JSON output">Required Fields</FieldLabel>
+              <Input value={(node.output_schema?.required_fields ?? []).join(', ')}
+                onChange={e => onChange({ ...node, output_schema: { ...node.output_schema, required_fields: e.target.value.split(',').map(s => s.trim()).filter(Boolean) } })}
+                placeholder="e.g. summary, confidence, sources" />
+            </div>
+          )}
+        </NodeSubSection>
+      )}
+
+      {/* ── Validation (agent only) ──────────────────────────────────────────── */}
+      {node.type === 'agent' && (
+        <NodeSubSection icon="fa-circle-check" title="Output Validation"
+          hint="Add rules to validate the LLM output. Rules are evaluated after output_schema parsing. on_failure controls what happens when a rule fails.">
+          <div className="flex items-center gap-4 mb-3">
+            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+              <input type="checkbox" checked={!!node.validation?.enabled}
+                onChange={e => onChange({ ...node, validation: { ...node.validation, enabled: e.target.checked } })}
+                className="w-4 h-4 rounded" />
+              Enable validation
+            </label>
+            {node.validation?.enabled && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400">On failure:</span>
+                <Select value={node.validation?.on_failure ?? 'warn'}
+                  onChange={e => onChange({ ...node, validation: { ...node.validation, on_failure: e.target.value as OnFailure } })}
+                  className="text-xs py-1">
+                  <option value="warn">warn (continue)</option>
+                  <option value="retry">retry node</option>
+                  <option value="error">halt workflow</option>
+                </Select>
+              </div>
+            )}
+          </div>
+          {node.validation?.enabled && (
+            <div className="space-y-2">
+              {(node.validation?.rules ?? []).map((rule, ri) => (
+                <div key={ri} className="flex gap-2 items-center">
+                  <Select value={rule.field}
+                    onChange={e => {
+                      const rules = [...(node.validation?.rules ?? [])];
+                      rules[ri] = { ...rule, field: e.target.value };
+                      onChange({ ...node, validation: { ...node.validation, rules } });
+                    }} className="w-32 flex-shrink-0 text-xs">
+                    <option value="">field…</option>
+                    {(node.output_schema?.required_fields ?? []).map(f => <option key={f} value={f}>{f}</option>)}
+                    {stateKeys.map(k => <option key={k} value={k}>{k}</option>)}
+                  </Select>
+                  <Select value={rule.operator}
+                    onChange={e => {
+                      const rules = [...(node.validation?.rules ?? [])];
+                      rules[ri] = { ...rule, operator: e.target.value as ValidationRule['operator'] };
+                      onChange({ ...node, validation: { ...node.validation, rules } });
+                    }} className="w-16 flex-shrink-0 text-xs">
+                    {['>=','<=','>','<','==','!='].map(op => <option key={op} value={op}>{op}</option>)}
+                  </Select>
+                  <Input value={String(rule.value ?? '')} placeholder="value"
+                    onChange={e => {
+                      const rules = [...(node.validation?.rules ?? [])];
+                      rules[ri] = { ...rule, value: e.target.value };
+                      onChange({ ...node, validation: { ...node.validation, rules } });
+                    }} className="flex-1 text-xs" />
+                  <button onClick={() => {
+                    onChange({ ...node, validation: { ...node.validation, rules: (node.validation?.rules ?? []).filter((_, i) => i !== ri) } });
+                  }} className="text-slate-300 hover:text-rose-500 flex-shrink-0"><i className="fas fa-xmark text-xs"></i></button>
+                </div>
+              ))}
+              <button onClick={() => {
+                const rules = [...(node.validation?.rules ?? []), { field: '', operator: '>=' as const, value: '' }];
+                onChange({ ...node, validation: { ...node.validation, rules } });
+              }} className="text-xs px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg transition-colors">
+                + Add Rule
+              </button>
+            </div>
+          )}
+        </NodeSubSection>
+      )}
+
+      {/* ── Guardrails (agent only) ──────────────────────────────────────────── */}
+      {node.type === 'agent' && (
+        <NodeSubSection icon="fa-shield-halved" title="Safety Guardrails"
+          hint="Per-node content safety. Each check runs on the LLM output before it enters the workflow state. block=halt, redact=mask sensitive content, approve=log only.">
+          <div className="space-y-2.5">
+            {([
+              { key: 'pii',             label: 'PII Detection',         desc: 'Emails, phones, SSNs, credit cards, IPs', defaultAction: 'redact' as GuardrailAction },
+              { key: 'harmful_content', label: 'Harmful Content',       desc: 'Dangerous instructions, weapon/drug synthesis', defaultAction: 'block' as GuardrailAction },
+              { key: 'self_harm',       label: 'Self-Harm Content',     desc: 'Suicide, self-injury, related language', defaultAction: 'block' as GuardrailAction },
+              { key: 'hate_speech',     label: 'Hate Speech',           desc: 'Hate speech, ethnic/racial incitement', defaultAction: 'block' as GuardrailAction },
+              { key: 'regulated_advice',label: 'Regulated Advice',      desc: 'Medical, legal, or financial advice', defaultAction: 'block' as GuardrailAction },
+            ] as const).map(({ key, label, desc, defaultAction }) => {
+              const cfg = (node.guardrails as any)?.[key] as GuardrailCheck | undefined;
+              const isEnabled = !!cfg?.enabled;
+              const toggleEnabled = () => {
+                const g = node.guardrails ?? {};
+                onChange({ ...node, guardrails: {
+                  ...g,
+                  [key]: isEnabled
+                    ? { enabled: false, action: defaultAction }
+                    : { enabled: true,  action: defaultAction },
+                }});
+              };
+              const setAction = (action: GuardrailAction) => {
+                const g = node.guardrails ?? {};
+                onChange({ ...node, guardrails: { ...g, [key]: { ...cfg, enabled: true, action } } });
+              };
+              return (
+                <div key={key} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all ${isEnabled ? 'bg-rose-50 border-rose-200' : 'bg-slate-50 border-slate-200'}`}>
+                  <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
+                    <input type="checkbox" checked={isEnabled} onChange={toggleEnabled}
+                      className="w-4 h-4 rounded flex-shrink-0" />
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold ${isEnabled ? 'text-rose-700' : 'text-slate-600'}`}>{label}</p>
+                      <p className="text-[10px] text-slate-400 truncate">{desc}</p>
+                    </div>
+                  </label>
+                  {isEnabled && (
+                    <Select value={cfg?.action ?? defaultAction} onChange={e => setAction(e.target.value as GuardrailAction)}
+                      className="w-24 flex-shrink-0 text-xs py-1">
+                      <option value="block">block</option>
+                      <option value="redact">redact</option>
+                      <option value="approve">approve</option>
+                    </Select>
+                  )}
+                  {!isEnabled && (
+                    <span className="text-[10px] text-slate-300 flex-shrink-0 w-24 text-center">off</span>
+                  )}
+                </div>
+              );
+            })}
+            {/* Regulated advice: sub-checks */}
+            {node.guardrails?.regulated_advice?.enabled && (
+              <div className="ml-4 flex gap-3 flex-wrap">
+                <p className="text-[10px] text-slate-400 uppercase tracking-widest w-full">Regulated categories:</p>
+                {(['medical','legal','financial'] as const).map(cat => {
+                  const checks = node.guardrails?.regulated_advice?.checks ?? ['medical','legal','financial'];
+                  const active = checks.includes(cat);
+                  return (
+                    <label key={cat} className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                      <input type="checkbox" checked={active}
+                        onChange={() => {
+                          const g = node.guardrails ?? {};
+                          const ra = (g.regulated_advice ?? { enabled: true, action: 'block' as GuardrailAction });
+                          const next = active ? checks.filter(c => c !== cat) : [...checks, cat];
+                          onChange({ ...node, guardrails: { ...g, regulated_advice: { ...ra, checks: next } } });
+                        }} className="w-3.5 h-3.5 rounded" />
+                      {cat}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </NodeSubSection>
+      )}
     </div>
   );
 };
@@ -444,6 +1590,8 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
   const [graphName, setGraphName] = useState('');
   const [version, setVersion] = useState('1.0');
   const [description, setDescription] = useState('');
+  const [author, setAuthor] = useState('');
+  const [tags, setTags] = useState('');
 
   // ── State Schema
   const [stateSchema, setStateSchema] = useState<StateVar[]>([]);
@@ -463,12 +1611,19 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
   const [checkpointStore, setCheckpointStore] = useState('sqlite');
   const [tracingEnabled, setTracingEnabled] = useState(true);
   const [tracingProvider, setTracingProvider] = useState('logging');
+  const [workflowTimeout, setWorkflowTimeout] = useState(300);
+  const [errorPolicy, setErrorPolicy] = useState('fail_fast');
+  const [maxConcurrency, setMaxConcurrency] = useState(4);
 
   // ── Memory
   const [stmType, setStmType] = useState('graph_state');
   const [ltmType, setLtmType] = useState('sqlite');
   const [ltmProvider, setLtmProvider] = useState('sqlite');
   const [ltmCollection, setLtmCollection] = useState('memory');
+  const [stmMaxEntries, setStmMaxEntries] = useState(100);
+  const [ltmTtlDays, setLtmTtlDays] = useState(90);
+  const [ltmIndexFields, setLtmIndexFields] = useState('');
+  const [redisUrl, setRedisUrl] = useState('');
 
   // ── Advanced
   const [parallelGroups, setParallelGroups] = useState<ParallelGroup[]>([]);
@@ -479,6 +1634,8 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
   const [obsTraceNodes, setObsTraceNodes] = useState(true);
   const [obsLogTransitions, setObsLogTransitions] = useState(true);
   const [obsCaptureOutputs, setObsCaptureOutputs] = useState(true);
+  const [retryOn, setRetryOn] = useState<string[]>(['node_error']);
+  const [backoffStrategy, setBackoffStrategy] = useState('fixed');
 
   // ── Run
   const [runResult, setRunResult] = useState<any>(null);
@@ -487,7 +1644,49 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
   const [runId, setRunId] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
+  // ── Save As Modal + versioning
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [templateVersions, setTemplateVersions] = useState<any[]>([]);
+  const [customTemplates, setCustomTemplates] = useState<any[]>([]);
+  const parentTemplateName = initialTemplate?.name ?? null;
+
   const { handleSave } = useWorkflowBuilder();
+
+  // ── Load custom templates on mount
+  useEffect(() => {
+    getCustomTemplates().then(setCustomTemplates).catch(() => {});
+  }, []);
+
+  // ── Load versions when save modal opens
+  const openSaveModal = async () => {
+    if (parentTemplateName) {
+      try { setTemplateVersions(await getTemplateVersions(parentTemplateName)); }
+      catch { setTemplateVersions([]); }
+    }
+    setSaveModalOpen(true);
+  };
+
+  const handleSaveAs = async (name: string, desc: string) => {
+    setSavingTemplate(true);
+    try {
+      await saveTemplate({
+        name,
+        description: desc,
+        template_json: buildConfig(),
+        parent_name: parentTemplateName || undefined,
+        sample_prompt: '',
+      });
+      setNotification({ type: 'success', msg: `Saved as "${name}"` });
+      // Refresh custom templates list
+      getCustomTemplates().then(setCustomTemplates).catch(() => {});
+      setSaveModalOpen(false);
+    } catch (e: any) {
+      setNotification({ type: 'error', msg: e?.response?.data?.detail || 'Save failed' });
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
 
   // ── Auto-dismiss notification
   useEffect(() => {
@@ -501,9 +1700,18 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
     setGraphName(ex?.graph_name || initialTemplate.name || '');
     setVersion(ex?.version || '1.0');
     setDescription(initialTemplate.description || '');
+    setAuthor(ex?.author || '');
+    setTags(Array.isArray(ex?.tags) ? ex.tags.join(', ') : (ex?.tags || ''));
 
     if (ex?.state_schema && typeof ex.state_schema === 'object') {
-      setStateSchema(Object.entries(ex.state_schema).map(([name, type]) => ({ name, type: type as any })));
+      setStateSchema(Object.entries(ex.state_schema).map(([name, val]) => {
+        if (typeof val === 'string') return { name, type: val as any };
+        if (typeof val === 'object' && val !== null) {
+          const v = val as any;
+          return { name, type: v.type as any, description: v.description, default_value: v.default_value };
+        }
+        return { name, type: 'string' as any };
+      }));
     }
 
     // Support both enterprise "nodes[]" format and legacy "agents[]" format
@@ -518,6 +1726,13 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
         routing_logic: Array.isArray(n.routing_logic) ? n.routing_logic : [],
         tools: Array.isArray(n.tools) ? n.tools : [],
         memory_access: Array.isArray(n.memory_access) ? n.memory_access : [],
+        // Per-node advanced fields
+        pre_llm: n.pre_llm ?? {},
+        llm_config: n.llm_config ?? {},
+        context: n.context ?? {},
+        output_schema: n.output_schema ?? {},
+        validation: n.validation ?? {},
+        guardrails: n.guardrails ?? {},
       })));
     } else if (Array.isArray(ex?.agents)) {
       // Legacy format: agents[] with "name" instead of "id"
@@ -531,6 +1746,12 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
         routing_logic: [],
         tools: Array.isArray(a.tools) ? a.tools : [],
         memory_access: [],
+        pre_llm: {},
+        llm_config: {},
+        context: {},
+        output_schema: {},
+        validation: {},
+        guardrails: {},
       })));
       // Build edges from agent "next" fields
       const inferredEdges: EdgeConfig[] = (ex.agents as any[])
@@ -540,7 +1761,7 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
     }
 
     if (Array.isArray(ex?.edges)) {
-      setEdges(ex.edges.map((e: any) => ({ from: e.from || '', to: e.to || '', condition: e.condition || '' })));
+      setEdges(ex.edges.map((e: any) => ({ from: e.from || '', to: e.to || '', condition: e.condition || '', label: e.label || '' })));
     }
     if (ex?.mcp_servers && typeof ex.mcp_servers === 'object') {
       setMcpServers(Object.entries(ex.mcp_servers).map(([name, cfg]: [string, any]) => ({
@@ -549,6 +1770,9 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
         endpoint: cfg.endpoint || '',
         command: cfg.command || '',
         args: Array.isArray(cfg.args) ? cfg.args.join(' ') : (cfg.args || ''),
+        description: cfg.description || '',
+        timeout_ms: cfg.timeout_ms,
+        auth_header: cfg.auth_header || '',
       })));
     }
     if (ex?.runtime) {
@@ -556,22 +1780,32 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
       setCheckpointStore(ex.runtime.checkpoint_store ?? 'sqlite');
       setTracingEnabled(ex.runtime.observability?.tracing ?? true);
       setTracingProvider(ex.runtime.observability?.provider ?? 'logging');
+      setWorkflowTimeout(ex.runtime.timeout_seconds ?? 300);
+      setErrorPolicy(ex.runtime.error_policy ?? 'fail_fast');
+      setMaxConcurrency(ex.runtime.max_concurrency ?? 4);
     }
     if (ex?.memory) {
       setStmType(ex.memory.short_term?.type ?? 'graph_state');
+      setRedisUrl(ex.memory.short_term?.redis_url ?? '');
+      setStmMaxEntries(ex.memory.short_term?.max_entries ?? 100);
       setLtmType(ex.memory.long_term?.type ?? 'sqlite');
       setLtmProvider(ex.memory.long_term?.provider ?? 'sqlite');
       setLtmCollection(ex.memory.long_term?.collection ?? 'memory');
+      setLtmTtlDays(ex.memory.long_term?.ttl_days ?? 90);
+      setLtmIndexFields(Array.isArray(ex.memory.long_term?.index_fields) ? ex.memory.long_term.index_fields.join(', ') : (ex.memory.long_term?.index_fields ?? ''));
     }
     if (Array.isArray(ex?.parallel_execution)) {
       setParallelGroups(ex.parallel_execution.map((g: any) => ({
         group: g.group || '',
         nodes: Array.isArray(g.nodes) ? g.nodes.join(', ') : '',
+        timeout_ms: g.timeout_ms,
       })));
     }
     if (ex?.retry_policy) {
       setMaxRetries(ex.retry_policy.max_retries ?? 3);
       setRetryIncrementState(ex.retry_policy.increment_state ?? 'retry_count');
+      setRetryOn(Array.isArray(ex.retry_policy.retry_on) ? ex.retry_policy.retry_on : ['node_error']);
+      setBackoffStrategy(ex.retry_policy.backoff_strategy ?? 'fixed');
     }
     if (ex?.checkpointing) {
       setCheckpointingEnabled(ex.checkpointing.enabled ?? true);
@@ -586,8 +1820,18 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
 
   // ── Build config
   const buildConfig = useCallback((): any => {
-    const schema: Record<string, string> = {};
-    stateSchema.forEach(v => { if (v.name) schema[v.name] = v.type; });
+    const schema: Record<string, any> = {};
+    stateSchema.forEach(v => {
+      if (!v.name) return;
+      if (v.description || (v.default_value !== undefined && v.default_value !== '')) {
+        const obj: any = { type: v.type };
+        if (v.description) obj.description = v.description;
+        if (v.default_value !== undefined && v.default_value !== '') obj.default_value = v.default_value;
+        schema[v.name] = obj;
+      } else {
+        schema[v.name] = v.type;
+      }
+    });
 
     const mcpObj: Record<string, any> = {};
     mcpServers.forEach(s => {
@@ -598,6 +1842,9 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
         if (s.command) cfg.command = s.command;
         if (s.args) cfg.args = s.args.split(/\s+/).filter(Boolean);
       }
+      if (s.description) cfg.description = s.description;
+      if (s.timeout_ms && s.timeout_ms !== 30000) cfg.timeout_ms = s.timeout_ms;
+      if (s.auth_header) cfg.auth_header = s.auth_header;
       mcpObj[s.name] = cfg;
     });
 
@@ -610,38 +1857,91 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
       if (n.routing_logic && n.routing_logic.length > 0) o.routing_logic = n.routing_logic;
       if (n.tools && n.tools.length > 0) o.tools = n.tools;
       if (n.memory_access && n.memory_access.length > 0) o.memory_access = n.memory_access;
+      // Pre-LLM: tool calls + RAG
+      const hasToolCalls = n.pre_llm?.tool_calls && n.pre_llm.tool_calls.length > 0 &&
+        n.pre_llm.tool_calls.some(tc => tc.tool);
+      const hasRag = n.pre_llm?.rag?.enabled;
+      if (hasToolCalls || hasRag) {
+        const preLlmOut: any = {};
+        if (hasToolCalls) preLlmOut.tool_calls = n.pre_llm!.tool_calls!.filter(tc => tc.tool);
+        if (hasRag) preLlmOut.rag = n.pre_llm!.rag;
+        o.pre_llm = preLlmOut;
+      }
+      // Per-node advanced fields — only include if non-empty
+      if (n.llm_config && Object.keys(n.llm_config).some(k => (n.llm_config as any)[k] != null))
+        o.llm_config = n.llm_config;
+      // Context: include if has sources OR has any input_guardrail enabled
+      const hasCtxSources = n.context?.sources && n.context.sources.length > 0;
+      const hasInputGuardrails = n.context?.input_guardrails &&
+        Object.values(n.context.input_guardrails).some((v: any) => v?.enabled);
+      if (hasCtxSources || hasInputGuardrails) {
+        // Build context output, always carry synthesis if strategy is non-default
+        const ctxOut: any = { ...n.context };
+        if (!n.context?.synthesis?.strategy || n.context.synthesis.strategy === 'concatenate') {
+          delete ctxOut.synthesis; // omit default to keep JSON clean
+        }
+        o.context = ctxOut;
+      }
+      if (n.output_schema?.format && n.output_schema.format !== 'text') o.output_schema = n.output_schema;
+      else if (n.output_schema?.state_key) o.output_schema = n.output_schema;
+      if (n.validation?.enabled) o.validation = n.validation;
+      if (n.guardrails && Object.values(n.guardrails).some((v: any) => v?.enabled))
+        o.guardrails = n.guardrails;
       return o;
     });
 
     const edgesOut = edges.filter(e => e.from && e.to).map(e => {
       const o: any = { from: e.from, to: e.to };
       if (e.condition) o.condition = e.condition;
+      if (e.label) o.label = e.label;
       return o;
     });
 
-    const parallelOut = parallelGroups.filter(g => g.group).map(g => ({
-      group: g.group,
-      nodes: g.nodes.split(',').map(s => s.trim()).filter(Boolean),
-    }));
+    const parallelOut = parallelGroups.filter(g => g.group).map(g => {
+      const o: any = { group: g.group, nodes: g.nodes.split(',').map(s => s.trim()).filter(Boolean) };
+      if (g.timeout_ms) o.timeout_ms = g.timeout_ms;
+      return o;
+    });
 
     return {
       graph_name: graphName || 'my_workflow',
       version,
+      ...(description ? { description } : {}),
+      ...(author ? { author } : {}),
+      ...(tags ? { tags: tags.split(',').map((s: string) => s.trim()).filter(Boolean) } : {}),
       runtime: {
         max_iterations: maxIterations,
         checkpoint_store: checkpointStore,
+        ...(workflowTimeout !== 300 ? { timeout_seconds: workflowTimeout } : {}),
+        ...(errorPolicy !== 'fail_fast' ? { error_policy: errorPolicy } : {}),
+        ...(maxConcurrency !== 4 ? { max_concurrency: maxConcurrency } : {}),
         observability: { tracing: tracingEnabled, provider: tracingProvider },
       },
       memory: {
-        short_term: { type: stmType },
-        long_term: { type: ltmType, provider: ltmProvider, collection: ltmCollection },
+        short_term: {
+          type: stmType,
+          ...(stmType === 'redis' && redisUrl ? { redis_url: redisUrl } : {}),
+          ...(stmMaxEntries !== 100 ? { max_entries: stmMaxEntries } : {}),
+        },
+        long_term: {
+          type: ltmType,
+          provider: ltmProvider,
+          collection: ltmCollection,
+          ...(ltmTtlDays !== 90 ? { ttl_days: ltmTtlDays } : {}),
+          ...(ltmIndexFields ? { index_fields: ltmIndexFields.split(',').map((s: string) => s.trim()).filter(Boolean) } : {}),
+        },
       },
       ...(Object.keys(mcpObj).length > 0 ? { mcp_servers: mcpObj } : {}),
       ...(Object.keys(schema).length > 0 ? { state_schema: schema } : {}),
       nodes: nodesOut,
       edges: edgesOut,
       ...(parallelOut.length > 0 ? { parallel_execution: parallelOut } : {}),
-      retry_policy: { max_retries: maxRetries, increment_state: retryIncrementState },
+      retry_policy: {
+        max_retries: maxRetries,
+        increment_state: retryIncrementState,
+        ...(retryOn.length > 0 && !(retryOn.length === 1 && retryOn[0] === 'node_error') ? { retry_on: retryOn } : {}),
+        ...(backoffStrategy !== 'fixed' ? { backoff_strategy: backoffStrategy } : {}),
+      },
       checkpointing: { enabled: checkpointingEnabled, nodes: checkpointNodes },
       observability_hooks: {
         trace_nodes: obsTraceNodes,
@@ -650,10 +1950,12 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
       },
     };
   }, [
-    graphName, version, stateSchema, nodes, edges, mcpServers,
+    graphName, version, description, author, tags, stateSchema, nodes, edges, mcpServers,
     maxIterations, checkpointStore, tracingEnabled, tracingProvider,
+    workflowTimeout, errorPolicy, maxConcurrency,
     stmType, ltmType, ltmProvider, ltmCollection,
-    parallelGroups, maxRetries, retryIncrementState,
+    stmMaxEntries, ltmTtlDays, ltmIndexFields, redisUrl,
+    parallelGroups, maxRetries, retryIncrementState, retryOn, backoffStrategy,
     checkpointingEnabled, checkpointNodes,
     obsTraceNodes, obsLogTransitions, obsCaptureOutputs,
   ]);
@@ -706,6 +2008,21 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
         <FieldLabel hint="Human-readable description of what this workflow does.">Description</FieldLabel>
         <Textarea rows={3} value={description} onChange={e => setDescription(e.target.value)} placeholder="Describe what this workflow does..." />
       </div>
+      <div>
+        <FieldLabel hint="Author or team responsible for this workflow.">Author</FieldLabel>
+        <Input value={author} onChange={e => setAuthor(e.target.value)} placeholder="e.g. Data Science Team" />
+      </div>
+      <div>
+        <FieldLabel hint="Comma-separated tags for categorization and search.">Tags</FieldLabel>
+        <Input value={tags} onChange={e => setTags(e.target.value)} placeholder="e.g. research, production, nlp" />
+        {tags && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {tags.split(',').map(t => t.trim()).filter(Boolean).map((tag, i) => (
+              <span key={i} className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-xs font-medium rounded-full">{tag}</span>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 
@@ -727,20 +2044,30 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
       )}
       <div className="space-y-2">
         {stateSchema.map((v, i) => (
-          <div key={i} className="flex gap-3 items-center p-3 bg-slate-50 rounded-xl border border-slate-200">
-            <Input value={v.name} onChange={e => setStateSchema(prev => prev.map((x, idx) => idx === i ? { ...x, name: e.target.value } : x))}
-              placeholder="variable_name" className="flex-1" />
-            <Select value={v.type} onChange={e => setStateSchema(prev => prev.map((x, idx) => idx === i ? { ...x, type: e.target.value as any } : x))}
-              className="w-36">
-              <option value="string">string</option>
-              <option value="integer">integer</option>
-              <option value="float">float</option>
-              <option value="boolean">boolean</option>
-            </Select>
-            <button onClick={() => setStateSchema(prev => prev.filter((_, idx) => idx !== i))}
-              className="text-slate-300 hover:text-rose-500 transition-colors px-2">
-              <i className="fas fa-trash-alt text-sm"></i>
-            </button>
+          <div key={i} className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+            <div className="flex gap-3 items-center">
+              <Input value={v.name} onChange={e => setStateSchema(prev => prev.map((x, idx) => idx === i ? { ...x, name: e.target.value } : x))}
+                placeholder="variable_name" className="flex-1" />
+              <Select value={v.type} onChange={e => setStateSchema(prev => prev.map((x, idx) => idx === i ? { ...x, type: e.target.value as any } : x))}
+                className="w-36">
+                <option value="string">string</option>
+                <option value="integer">integer</option>
+                <option value="float">float</option>
+                <option value="boolean">boolean</option>
+                <option value="list">list</option>
+                <option value="dict">dict</option>
+              </Select>
+              <button onClick={() => setStateSchema(prev => prev.filter((_, idx) => idx !== i))}
+                className="text-slate-300 hover:text-rose-500 transition-colors px-2">
+                <i className="fas fa-trash-alt text-sm"></i>
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <Input value={v.description ?? ''} onChange={e => setStateSchema(prev => prev.map((x, idx) => idx === i ? { ...x, description: e.target.value } : x))}
+                placeholder="description (optional)" className="flex-1 text-xs" />
+              <Input value={v.default_value ?? ''} onChange={e => setStateSchema(prev => prev.map((x, idx) => idx === i ? { ...x, default_value: e.target.value } : x))}
+                placeholder="default value" className="w-32 text-xs font-mono" />
+            </div>
           </div>
         ))}
       </div>
@@ -799,7 +2126,7 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
               <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${NODE_BADGES[selectedNode.type]}`}>{selectedNode.type}</span>
               <span className="text-sm font-bold text-slate-700">{selectedNode.id}</span>
             </div>
-            <NodeDetailPanel node={selectedNode} onChange={updateSelectedNode} stateKeys={stateKeys} />
+            <NodeDetailPanel node={selectedNode} onChange={updateSelectedNode} stateKeys={stateKeys} stateVars={stateSchema} />
           </>
         ) : (
           <div className="h-full flex flex-col items-center justify-center text-center py-16 text-slate-400">
@@ -822,7 +2149,7 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
           + Add Edge
         </button>
       </div>
-      <p className="text-xs text-slate-400">Explicit edges connect nodes. Conditional edges fire only when the condition is met.</p>
+      <p className="text-xs text-slate-400">Explicit edges connect nodes. Conditional edges fire only when the condition is met. Leave condition blank for unconditional edges.</p>
       {edges.length === 0 && (
         <div className="py-10 text-center border-2 border-dashed border-slate-200 rounded-xl text-slate-400 text-sm">
           No edges defined. Nodes can also use their "next" field for simple routing.
@@ -831,19 +2158,25 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
       <div className="space-y-2">
         {edges.map((e, i) => (
           <div key={i} className="flex gap-3 items-center p-3 bg-slate-50 rounded-xl border border-slate-200">
-            <Select value={e.from} onChange={ev => setEdges(prev => prev.map((x, idx) => idx === i ? { ...x, from: ev.target.value } : x))} className="w-40">
+            <Select value={e.from} onChange={ev => setEdges(prev => prev.map((x, idx) => idx === i ? { ...x, from: ev.target.value } : x))} className="w-36 flex-shrink-0">
               <option value="">from…</option>
               {nodeIds.map(id => <option key={id} value={id}>{id}</option>)}
             </Select>
-            <i className="fas fa-arrow-right text-slate-400"></i>
-            <Select value={e.to} onChange={ev => setEdges(prev => prev.map((x, idx) => idx === i ? { ...x, to: ev.target.value } : x))} className="w-40">
+            <i className="fas fa-arrow-right text-slate-400 flex-shrink-0"></i>
+            <Select value={e.to} onChange={ev => setEdges(prev => prev.map((x, idx) => idx === i ? { ...x, to: ev.target.value } : x))} className="w-36 flex-shrink-0">
               <option value="">to…</option>
-              {nodeIds.map(id => <option key={id} value={id}>{id}</option>)}
+              {[...nodeIds, 'END'].map(id => <option key={id} value={id}>{id}</option>)}
             </Select>
-            <Input value={e.condition ?? ''} onChange={ev => setEdges(prev => prev.map((x, idx) => idx === i ? { ...x, condition: ev.target.value } : x))}
-              placeholder="condition (optional)" className="flex-1" />
+            <ConditionBuilder
+              value={e.condition ?? ''}
+              onChange={v => setEdges(prev => prev.map((x, idx) => idx === i ? { ...x, condition: v } : x))}
+              stateVars={stateSchema}
+              placeholder="condition (optional — leave blank for unconditional)"
+            />
+            <Input value={e.label ?? ''} onChange={ev => setEdges(prev => prev.map((x, idx) => idx === i ? { ...x, label: ev.target.value } : x))}
+              placeholder="label (opt)" className="w-28 flex-shrink-0 text-xs" />
             <button onClick={() => setEdges(prev => prev.filter((_, idx) => idx !== i))}
-              className="text-slate-300 hover:text-rose-500 transition-colors">
+              className="text-slate-300 hover:text-rose-500 transition-colors flex-shrink-0">
               <i className="fas fa-trash-alt text-sm"></i>
             </button>
           </div>
@@ -906,6 +2239,23 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
                 </div>
               </div>
             )}
+            <div className="grid grid-cols-3 gap-2 pt-1">
+              <div>
+                <FieldLabel hint="Human-readable description of this MCP server">Description</FieldLabel>
+                <Input value={s.description ?? ''} onChange={e => setMcpServers(prev => prev.map((x, idx) => idx === i ? { ...x, description: e.target.value } : x))}
+                  placeholder="optional description" className="text-xs" />
+              </div>
+              <div>
+                <FieldLabel hint="Request timeout in milliseconds (default 30000)">Timeout (ms)</FieldLabel>
+                <Input type="number" value={s.timeout_ms ?? 30000} onChange={e => setMcpServers(prev => prev.map((x, idx) => idx === i ? { ...x, timeout_ms: Number(e.target.value) || undefined } : x))}
+                  placeholder="30000" className="text-xs" />
+              </div>
+              <div>
+                <FieldLabel hint="Authorization header value (e.g. Bearer sk-...)">Auth Header</FieldLabel>
+                <Input value={s.auth_header ?? ''} onChange={e => setMcpServers(prev => prev.map((x, idx) => idx === i ? { ...x, auth_header: e.target.value } : x))}
+                  placeholder="Bearer sk-..." className="text-xs" />
+              </div>
+            </div>
           </div>
         ))}
       </div>
@@ -931,6 +2281,22 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
                 <option value="postgres">postgres</option>
                 <option value="memory">memory</option>
               </Select>
+            </div>
+            <div>
+              <FieldLabel hint="Overall workflow timeout in seconds (default 300). Requires asyncio enforcement.">Workflow Timeout (s)</FieldLabel>
+              <Input type="number" value={workflowTimeout} onChange={e => setWorkflowTimeout(Number(e.target.value))} min={1} max={86400} />
+            </div>
+            <div>
+              <FieldLabel hint="Error handling policy: fail_fast halts on first error; continue logs and proceeds.">Error Policy</FieldLabel>
+              <Select value={errorPolicy} onChange={e => setErrorPolicy(e.target.value)}>
+                <option value="fail_fast">fail_fast (halt on error)</option>
+                <option value="continue">continue (log and proceed)</option>
+                <option value="retry">retry (use retry_policy)</option>
+              </Select>
+            </div>
+            <div>
+              <FieldLabel hint="Maximum concurrent node executions (default 4). Requires LangGraph thread config.">Max Concurrency</FieldLabel>
+              <Input type="number" value={maxConcurrency} onChange={e => setMaxConcurrency(Number(e.target.value))} min={1} max={64} />
             </div>
           </div>
           <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
@@ -964,6 +2330,16 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
               <option value="redis">redis</option>
             </Select>
           </div>
+          {stmType === 'redis' && (
+            <div>
+              <FieldLabel hint="Redis connection URL for short-term memory storage">Redis URL</FieldLabel>
+              <Input value={redisUrl} onChange={e => setRedisUrl(e.target.value)} placeholder="redis://localhost:6379/0" />
+            </div>
+          )}
+          <div>
+            <FieldLabel hint="Maximum number of STM entries to retain per session (default 100)">Max STM Entries</FieldLabel>
+            <Input type="number" value={stmMaxEntries} onChange={e => setStmMaxEntries(Number(e.target.value))} min={1} max={10000} className="w-32" />
+          </div>
           <div className="grid grid-cols-3 gap-4">
             <div>
               <FieldLabel hint="Long-term memory persists across runs">LTM Type</FieldLabel>
@@ -980,6 +2356,16 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
             <div>
               <FieldLabel hint="Collection / table name for long-term memory">Collection</FieldLabel>
               <Input value={ltmCollection} onChange={e => setLtmCollection(e.target.value)} placeholder="memory" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <FieldLabel hint="Days to retain LTM entries before expiry (default 90). Set 0 for no expiry.">LTM TTL (days)</FieldLabel>
+              <Input type="number" value={ltmTtlDays} onChange={e => setLtmTtlDays(Number(e.target.value))} min={0} max={3650} />
+            </div>
+            <div>
+              <FieldLabel hint="Comma-separated LTM field names to index for faster search (e.g. session_id, task)">LTM Index Fields</FieldLabel>
+              <Input value={ltmIndexFields} onChange={e => setLtmIndexFields(e.target.value)} placeholder="e.g. session_id, task" />
             </div>
           </div>
         </div>
@@ -1006,6 +2392,8 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
               placeholder="group name" className="w-40" />
             <Input value={g.nodes} onChange={e => setParallelGroups(prev => prev.map((x, idx) => idx === i ? { ...x, nodes: e.target.value } : x))}
               placeholder="NodeA, NodeB, NodeC" className="flex-1" />
+            <Input type="number" value={g.timeout_ms ?? ''} onChange={e => setParallelGroups(prev => prev.map((x, idx) => idx === i ? { ...x, timeout_ms: Number(e.target.value) || undefined } : x))}
+              placeholder="timeout ms" className="w-28" />
             <button onClick={() => setParallelGroups(prev => prev.filter((_, idx) => idx !== i))}
               className="text-slate-300 hover:text-rose-500 transition-colors">
               <i className="fas fa-trash-alt"></i>
@@ -1036,6 +2424,26 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
             </Select>
           </div>
         </div>
+          <div className="space-y-2">
+            <FieldLabel hint="Which error types should trigger a retry">Retry On (error types)</FieldLabel>
+            <div className="flex flex-wrap gap-3">
+              {(['node_error', 'guardrail_block', 'validation_fail', 'timeout'] as const).map(et => (
+                <label key={et} className="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer">
+                  <input type="checkbox" checked={retryOn.includes(et)}
+                    onChange={e => setRetryOn(prev => e.target.checked ? [...prev, et] : prev.filter(x => x !== et))}
+                    className="w-3.5 h-3.5 rounded" />
+                  {et}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
+            <FieldLabel hint="Backoff strategy between retries">Backoff Strategy</FieldLabel>
+            <Select value={backoffStrategy} onChange={e => setBackoffStrategy(e.target.value)} className="w-48">
+              <option value="fixed">fixed (constant delay)</option>
+              <option value="exponential">exponential (doubling delay)</option>
+            </Select>
+          </div>
       </div>
 
       <Divider />
@@ -1134,12 +2542,7 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
     };
 
     const handleSaveTemplate = async () => {
-      try {
-        await saveTemplate({ name: cfg.graph_name, description, example: cfg });
-        setNotification({ type: 'success', msg: `Saved as template: ${cfg.graph_name}` });
-      } catch (e: any) {
-        setNotification({ type: 'error', msg: e?.response?.data?.detail || 'Save failed' });
-      }
+      await openSaveModal();
     };
 
     return (
@@ -1171,7 +2574,7 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
           <div className="space-y-3">
             <button onClick={handleSaveTemplate}
               className="w-full py-3 bg-white border-2 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 font-semibold rounded-xl flex items-center justify-center gap-2 transition-all">
-              <i className="fas fa-save"></i> Save as Template
+              <i className="fas fa-save"></i> Save as Template…
             </button>
             <button onClick={handleRun} disabled={runLoading}
               className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors shadow-lg shadow-indigo-200">
@@ -1180,6 +2583,33 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
                 : <><i className="fas fa-play"></i> Run Workflow</>}
             </button>
           </div>
+
+          {/* My Saved Templates (custom versions) */}
+          {customTemplates.length > 0 && (
+            <div className="p-4 bg-white border border-slate-200 rounded-2xl">
+              <SectionTitle icon="fa-bookmark">My Saved Templates</SectionTitle>
+              <div className="space-y-2 max-h-52 overflow-auto">
+                {customTemplates.map((t, i) => (
+                  <div key={i} className="flex items-center justify-between px-3 py-2.5 bg-slate-50 rounded-xl border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 transition-all group cursor-pointer"
+                    onClick={() => onNavigate?.('/builder', { template: t })}>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="flex-shrink-0 w-6 h-6 bg-indigo-100 text-indigo-600 rounded-lg flex items-center justify-center text-[10px] font-bold">v{t.version ?? 1}</span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-700 group-hover:text-indigo-700 truncate">{t.name}</p>
+                        {t.parent_name && <p className="text-[10px] text-slate-400 truncate">from: {t.parent_name}</p>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {t.updated_at && (
+                        <span className="text-[10px] text-slate-400">{new Date(t.updated_at).toLocaleDateString()}</span>
+                      )}
+                      <i className="fas fa-chevron-right text-slate-300 text-xs group-hover:text-indigo-400 transition-colors"></i>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right: result */}
@@ -1283,6 +2713,20 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
           </div>
         </div>
       </div>
+
+      {/* ── Save As Modal */}
+      {saveModalOpen && (
+        <SaveAsModal
+          open={saveModalOpen}
+          initialName={graphName}
+          initialDescription={description}
+          parentName={parentTemplateName ?? undefined}
+          versions={templateVersions}
+          saving={savingTemplate}
+          onSave={handleSaveAs}
+          onClose={() => setSaveModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

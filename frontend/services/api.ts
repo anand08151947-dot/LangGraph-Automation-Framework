@@ -45,8 +45,24 @@ export const getTemplate = async (name: string): Promise<TemplateInfo> => {
   return res.data;
 };
 
-export const saveTemplate = async (data: SaveTemplateRequest): Promise<{ status: string; filename: string }> => {
+export const saveTemplate = async (data: {
+  name: string;
+  description?: string;
+  template_json: any;
+  parent_name?: string;
+  sample_prompt?: string;
+}): Promise<{ status: string; template: any }> => {
   const res = await api.post('/save_template', data);
+  return res.data;
+};
+
+export const getCustomTemplates = async (): Promise<any[]> => {
+  const res = await api.get('/templates/custom');
+  return res.data;
+};
+
+export const getTemplateVersions = async (baseName: string): Promise<any[]> => {
+  const res = await api.get(`/templates/versions/${encodeURIComponent(baseName)}`);
   return res.data;
 };
 
