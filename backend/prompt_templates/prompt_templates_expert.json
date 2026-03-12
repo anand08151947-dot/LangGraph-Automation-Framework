@@ -1,0 +1,480 @@
+[
+  {
+    "use_case": "Incident Response Workflow",
+    "description": "Automated incident detection, triage, escalation, and resolution with multiple agents.",
+    "sample_prompt": "Create a workflow where a Detector identifies incidents, a TriageAgent assesses severity, an Escalator notifies stakeholders if critical, and a Resolver fixes the issue.",
+    "template_json": {
+      "graph_name": "Incident_Response_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Detector",
+          "type": "agent",
+          "system_prompt": "Detect incidents from monitoring data.",
+          "tools": [
+            "monitoring_api"
+          ],
+          "next": "TriageAgent"
+        },
+        {
+          "id": "TriageAgent",
+          "type": "agent",
+          "system_prompt": "Assess incident severity. If critical, escalate; else, resolve.",
+          "next": "Escalator"
+        },
+        {
+          "id": "Escalator",
+          "type": "agent",
+          "system_prompt": "Notify stakeholders for critical incidents.",
+          "tools": [
+            "email_api"
+          ],
+          "next": "Resolver"
+        },
+        {
+          "id": "Resolver",
+          "type": "agent",
+          "system_prompt": "Resolve the incident and close the workflow.",
+          "tools": [
+            "remediation_tool"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Detector",
+          "to": "TriageAgent"
+        },
+        {
+          "from": "TriageAgent",
+          "to": "Escalator"
+        },
+        {
+          "from": "Escalator",
+          "to": "Resolver"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Customer Onboarding Workflow",
+    "description": "Multi-agent onboarding process with document verification, account setup, and welcome communication.",
+    "sample_prompt": "Create a workflow where a Collector gathers customer info, a Verifier checks documents, an AccountCreator sets up the account, and a Welcomer sends a welcome message.",
+    "template_json": {
+      "graph_name": "Customer_Onboarding_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Collector",
+          "type": "agent",
+          "system_prompt": "Collect customer information and documents.",
+          "tools": [
+            "form_api"
+          ],
+          "next": "Verifier"
+        },
+        {
+          "id": "Verifier",
+          "type": "agent",
+          "system_prompt": "Verify submitted documents for authenticity.",
+          "tools": [
+            "verification_api"
+          ],
+          "next": "AccountCreator"
+        },
+        {
+          "id": "AccountCreator",
+          "type": "agent",
+          "system_prompt": "Create customer account in the system.",
+          "tools": [
+            "account_api"
+          ],
+          "next": "Welcomer"
+        },
+        {
+          "id": "Welcomer",
+          "type": "agent",
+          "system_prompt": "Send a welcome message to the new customer.",
+          "tools": [
+            "email_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Collector",
+          "to": "Verifier"
+        },
+        {
+          "from": "Verifier",
+          "to": "AccountCreator"
+        },
+        {
+          "from": "AccountCreator",
+          "to": "Welcomer"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Multi-Agent Financial Audit",
+    "description": "Agents collaborate to collect, analyze, and audit financial data, escalating to compliance if issues are found.",
+    "sample_prompt": "Create a workflow where a Collector gathers financial records, an Analyzer reviews for discrepancies, an Auditor checks compliance, and a ComplianceAgent intervenes if issues are found.",
+    "template_json": {
+      "graph_name": "Financial_Audit_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Collector",
+          "type": "agent",
+          "system_prompt": "Collect financial records from sources.",
+          "tools": [
+            "finance_api"
+          ],
+          "next": "Analyzer"
+        },
+        {
+          "id": "Analyzer",
+          "type": "agent",
+          "system_prompt": "Analyze records for discrepancies.",
+          "tools": [
+            "analysis_tool"
+          ],
+          "next": "Auditor"
+        },
+        {
+          "id": "Auditor",
+          "type": "agent",
+          "system_prompt": "Audit for compliance. If issues found, escalate to ComplianceAgent.",
+          "next": "ComplianceAgent"
+        },
+        {
+          "id": "ComplianceAgent",
+          "type": "agent",
+          "system_prompt": "Resolve compliance issues and close the audit.",
+          "tools": [
+            "compliance_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Collector",
+          "to": "Analyzer"
+        },
+        {
+          "from": "Analyzer",
+          "to": "Auditor"
+        },
+        {
+          "from": "Auditor",
+          "to": "ComplianceAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Multi-Agent Recruitment Pipeline",
+    "description": "Automated recruitment process with screening, interviewing, and offer management.",
+    "sample_prompt": "Create a workflow where a Screener reviews applications, an Interviewer conducts interviews, a DecisionMaker selects candidates, and an OfferManager sends job offers.",
+    "template_json": {
+      "graph_name": "Recruitment_Pipeline_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Screener",
+          "type": "agent",
+          "system_prompt": "Screen job applications for minimum requirements.",
+          "tools": [
+            "hr_api"
+          ],
+          "next": "Interviewer"
+        },
+        {
+          "id": "Interviewer",
+          "type": "agent",
+          "system_prompt": "Conduct interviews with shortlisted candidates.",
+          "tools": [
+            "video_api"
+          ],
+          "next": "DecisionMaker"
+        },
+        {
+          "id": "DecisionMaker",
+          "type": "agent",
+          "system_prompt": "Select candidates for job offers.",
+          "next": "OfferManager"
+        },
+        {
+          "id": "OfferManager",
+          "type": "agent",
+          "system_prompt": "Send job offers to selected candidates.",
+          "tools": [
+            "email_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Screener",
+          "to": "Interviewer"
+        },
+        {
+          "from": "Interviewer",
+          "to": "DecisionMaker"
+        },
+        {
+          "from": "DecisionMaker",
+          "to": "OfferManager"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Multi-Agent Event Planning",
+    "description": "Agents collaborate to plan, schedule, and execute an event, with feedback and post-event analysis.",
+    "sample_prompt": "Create a workflow where a Planner organizes the event, a Scheduler books resources, an Executor runs the event, and an Analyst reviews feedback.",
+    "template_json": {
+      "graph_name": "Event_Planning_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Planner",
+          "type": "agent",
+          "system_prompt": "Organize event details and requirements.",
+          "tools": [
+            "calendar_api"
+          ],
+          "next": "Scheduler"
+        },
+        {
+          "id": "Scheduler",
+          "type": "agent",
+          "system_prompt": "Book resources and schedule event activities.",
+          "tools": [
+            "booking_api"
+          ],
+          "next": "Executor"
+        },
+        {
+          "id": "Executor",
+          "type": "agent",
+          "system_prompt": "Execute the event as planned.",
+          "next": "Analyst"
+        },
+        {
+          "id": "Analyst",
+          "type": "agent",
+          "system_prompt": "Review event feedback and provide analysis.",
+          "tools": [
+            "feedback_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Planner",
+          "to": "Scheduler"
+        },
+        {
+          "from": "Scheduler",
+          "to": "Executor"
+        },
+        {
+          "from": "Executor",
+          "to": "Analyst"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  }
+]

@@ -14,22 +14,54 @@ from typing import Dict, Any, Optional
 
 # You can swap this for Gemini or other LLM providers
 import openai
+import requests
 
 SCHEMA_PATH = "langgraph_workflow.schema.json"
 
+# LM Studio defaults (can be overridden via config or env vars)
+LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://localhost:1234/v1/completions")
+LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "local-model")
+
 class LLMTranslator:
-    """Translator with pluggable modes: 'openai' (automated) or 'manual' (user copies prompt to LLM and pastes response)."""
-    def __init__(self, schema_path: str = SCHEMA_PATH, openai_api_key: Optional[str] = None, mode: str = "openai"):
+    """Translator with pluggable modes: 'openai', 'lm_studio', or 'manual'."""
+    def __init__(self, schema_path: str = SCHEMA_PATH, openai_api_key: Optional[str] = None, mode: str = "openai",
+                 lm_studio_url: Optional[str] = None, lm_studio_model: Optional[str] = None):
         self.schema = self._load_schema(schema_path)
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
         openai.api_key = self.openai_api_key
         self.mode = mode.lower()
+        self.lm_studio_url = lm_studio_url or os.getenv("LM_STUDIO_URL", LM_STUDIO_URL)
+        self.lm_studio_model = lm_studio_model or os.getenv("LM_STUDIO_MODEL", LM_STUDIO_MODEL)
 
     def _load_schema(self, path: str) -> Dict[str, Any]:
         if not os.path.exists(path):
             return {}
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
+
+    def _call_lm_studio(self, prompt: str, temperature: float = 0.2) -> str:
+        """Send a prompt to LM Studio local server and return the text response."""
+        payload = {
+            "model": self.lm_studio_model,
+            "prompt": prompt,
+            "temperature": temperature,
+            "stream": False,
+            "max_tokens": 2048,
+        }
+        response = requests.post(self.lm_studio_url, json=payload, timeout=120)
+        response.raise_for_status()
+        data = response.json()
+        text = data["choices"][0]["text"].strip()
+        # Strip markdown code fences if the model wraps output in ```json ... ```
+        if text.startswith("```"):
+            lines = text.splitlines()
+            # Remove opening fence (```json or ```)
+            lines = lines[1:] if lines[0].startswith("```") else lines
+            # Remove closing fence
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+        return text
 
     def _build_prompt(self, instructions: str, base_json: Optional[Dict[str, Any]] = None, customization: bool = False) -> str:
         if customization and base_json is not None:
@@ -81,6 +113,16 @@ class LLMTranslator:
             json_str = "\n".join(lines).strip()
             return self._parse_json_and_validate(json_str)
 
+        if self.mode == "lm_studio":
+            for attempt in range(retries + 1):
+                try:
+                    json_str = self._call_lm_studio(prompt)
+                    return self._parse_json_and_validate(json_str)
+                except Exception as e:
+                    if attempt == retries:
+                        raise ValueError(f"LM Studio translation failed after {retries+1} attempts: {e}")
+            raise ValueError("LM Studio translation failed.")
+
         # Automated (OpenAI) path
         for attempt in range(retries + 1):
             try:
@@ -116,6 +158,16 @@ class LLMTranslator:
                 lines.append(line)
             json_str = "\n".join(lines).strip()
             return self._parse_json_and_validate(json_str)
+
+        if self.mode == "lm_studio":
+            for attempt in range(retries + 1):
+                try:
+                    json_str = self._call_lm_studio(prompt)
+                    return self._parse_json_and_validate(json_str)
+                except Exception as e:
+                    if attempt == retries:
+                        raise ValueError(f"LM Studio customization failed after {retries+1} attempts: {e}")
+            raise ValueError("LM Studio customization failed.")
 
         for attempt in range(retries + 1):
             try:

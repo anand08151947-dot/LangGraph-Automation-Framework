@@ -1,24 +1,50 @@
-// Download workflow artifact bundle
-// params: { artifact_ids: string[] }
-export const downloadBundle = async (params: { artifact_ids: string[] }) => {
-  // Returns a blob (zip/tarball)
-  const res = await api.get('/download_bundle', {
-    params,
-    responseType: 'blob',
-  });
-  return res.data;
-};
+import axios, { AxiosError, AxiosInstance } from 'axios';
 import {
   WorkflowConfig,
   SaveTemplateRequest,
-  OrchestrationRequest,
   OrchestrationResponse,
-  EnglishToJsonRequest,
   EnglishToJsonResponse,
-  CustomizeJsonLLMRequest,
   CustomizeJsonLLMResponse,
-  StatusResponse
-} from './types';
+  StatusResponse,
+  TemplateInfo,
+  Artifact,
+} from '../types';
+
+const API_BASE = (import.meta as any).env?.VITE_API_BASE || 'http://localhost:8000';
+
+const api: AxiosInstance = axios.create({
+  baseURL: API_BASE,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  timeout: 15000,
+});
+
+// Global error handler
+api.interceptors.response.use(
+  response => response,
+  (error: AxiosError) => {
+    if (error.response) {
+      console.error('API Error:', error.response.status, error.response.data);
+    } else if (error.request) {
+      console.error('API No Response:', error.request);
+    } else {
+      console.error('API Error:', error.message);
+    }
+    return Promise.reject(error);
+  }
+);
+
+export const getTemplates = async (): Promise<TemplateInfo[]> => {
+  const res = await api.get<TemplateInfo[]>('/templates');
+  return res.data;
+};
+
+export const getTemplate = async (name: string): Promise<TemplateInfo> => {
+  const res = await api.get<TemplateInfo>(`/template/${name}`);
+  return res.data;
+};
+
 export const saveTemplate = async (data: SaveTemplateRequest): Promise<{ status: string; filename: string }> => {
   const res = await api.post('/save_template', data);
   return res.data;
@@ -68,41 +94,38 @@ export const customizeJsonLLMSubmit = async (base_json: any, llm_response: strin
   const res = await api.post('/customize_json_llm/submit', { base_json, llm_response });
   return res.data;
 };
-import axios, { AxiosError, AxiosInstance } from 'axios';
-import { TemplateInfo } from './types';
 
-const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000';
-
-const api: AxiosInstance = axios.create({
-  baseURL: API_BASE,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  timeout: 15000,
-});
-
-// Global error handler
-api.interceptors.response.use(
-  response => response,
-  (error: AxiosError) => {
-    if (error.response) {
-      console.error('API Error:', error.response.status, error.response.data);
-    } else if (error.request) {
-      console.error('API No Response:', error.request);
-    } else {
-      console.error('API Error:', error.message);
-    }
-    return Promise.reject(error);
-  }
-);
-
-export const getTemplates = async (): Promise<TemplateInfo[]> => {
-  const res = await api.get<TemplateInfo[]>('/templates');
+export const downloadBundle = async (params: { artifact_ids: string[] }) => {
+  const res = await api.get('/download_bundle', {
+    params,
+    responseType: 'blob',
+  });
   return res.data;
 };
 
-export const getTemplate = async (name: string): Promise<TemplateInfo> => {
-  const res = await api.get<TemplateInfo>(`/template/${name}`);
+// New API functions
+export const getConfig = async (): Promise<any> => {
+  const res = await api.get('/config');
+  return res.data;
+};
+
+export const updateLmStudioConfig = async (url: string, model: string): Promise<any> => {
+  const res = await api.put('/config/lm_studio', { url, model });
+  return res.data;
+};
+
+export const getArtifacts = async (): Promise<Artifact[]> => {
+  const res = await api.get<Artifact[]>('/artifacts');
+  return res.data;
+};
+
+export const getSystemHealth = async (): Promise<any> => {
+  const res = await api.get('/health');
+  return res.data;
+};
+
+export const getSystemReadiness = async (): Promise<any> => {
+  const res = await api.get('/readiness');
   return res.data;
 };
 

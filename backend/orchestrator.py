@@ -1,17 +1,20 @@
 """
 orchestrator.py
-End-to-end workflow execution and result collection
+End-to-end workflow execution and result collection.
+
 Features:
-- Accept config JSON (from LLM or template)
-- Assemble graph (GraphFactory + MCPAutoBinder)
-- Execute workflow
-- Collect and return results
+- Accept config JSON (old agents[] or new enterprise nodes[] format)
+- Assemble graph via GraphFactory + MCPAutoBinder
+- Execute workflow using graph.stream() (correct LangGraph API)
+- Save STM/LTM via MemoryManager after each step
+- Log and trace each step via ObservabilityManager
+- Return final state as a JSON-serializable dict
 """
 
-from graph_factory import GraphFactory, AgentState
+from typing import Any, Dict, Optional
+
+from graph_factory import GraphFactory, _make_default_state
 from mcp_autobinder import MCPAutoBinder
-
-
 from memory_manager import MemoryManager
 from observability_manager import ObservabilityManager
 
@@ -25,88 +28,131 @@ class Orchestrator:
         self.observability = ObservabilityManager(["logging"])
         self.max_retries = max_retries
 
-    def run_workflow(self, config_json, session_id=None, initial_state=None):
-        """
-        Run the workflow, saving STM and LTM after each step.
-        session_id: Unique identifier for the workflow run (for memory tracking)
-        """
-        graph = self.factory.build_from_config(config_json)
-        state = None
-        if session_id:
-            # Try to load STM for resumption
-            loaded = self.memory_manager.load_stm(session_id)
-            if loaded:
-                state = AgentState(**loaded)
-        if not state:
-            state = initial_state or AgentState()
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-        # Custom step-by-step execution to hook memory
+    def run_workflow(
+        self,
+        config_json: Dict[str, Any],
+        session_id: Optional[str] = None,
+        initial_state: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Run the workflow step-by-step, persisting memory at every step.
+
+        Uses graph.stream() (the correct LangGraph API) which yields
+        {node_name: state_updates} dicts for each executed node.
+
+        Args:
+            config_json:   Workflow config (old agents[] or new nodes[]).
+            session_id:    Unique run identifier used for STM/LTM storage.
+            initial_state: Optional override for the starting state dict.
+
+        Returns:
+            The final merged state dict (JSON-serializable).
+        """
+        # ── Build graph ────────────────────────────────────────────────
+        graph = self.factory.build_from_config(config_json)
+
+        # ── Build initial state dict ───────────────────────────────────
+        state_schema: Dict[str, str] = config_json.get("state_schema", {})
+        max_iterations: int = config_json.get("runtime", {}).get("max_iterations", 20)
+
+        # Try to resume from saved STM when a session_id is provided
+        current_state: Dict[str, Any] = {}
+        if session_id:
+            loaded = self.memory_manager.load_stm(session_id)
+            if loaded and isinstance(loaded, dict):
+                current_state = loaded
+
+        if not current_state:
+            if initial_state and isinstance(initial_state, dict):
+                current_state = initial_state
+            else:
+                current_state = _make_default_state(state_schema)
+
+        # ── Step-by-step execution via graph.stream() ──────────────────
+        # graph.stream() yields {node_name: {field: value, ...}} per step.
         step_idx = 0
-        for step_state in graph.iter_run(state):
+        last_state = dict(current_state)
+
+        for step_output in graph.stream(current_state):
             retry_count = 0
             while True:
                 try:
-                    # --- Pre-step plugin hooks ---
+                    # Merge node updates into running state
+                    for node_name, node_updates in step_output.items():
+                        if isinstance(node_updates, dict):
+                            last_state.update(node_updates)
+
+                    sender = last_state.get("sender", "")
+
+                    # Pre-step hooks
                     self.observability.run_plugin_hooks("pre_step", {
                         "step_idx": step_idx,
-                        "state": step_state
+                        "state": last_state,
                     })
 
-                    # Observability: log agent action
-                    self.observability.log_event(
-                        "agent_action",
-                        {
-                            "step_idx": step_idx,
-                            "sender": step_state.sender,
-                            "messages": step_state.messages,
-                            "metadata": step_state.metadata
-                        }
-                    )
-                    # Observability: trace step
+                    # Log the agent action
+                    self.observability.log_event("agent_action", {
+                        "step_idx": step_idx,
+                        "sender": sender,
+                        "messages": last_state.get("messages", []),
+                        "metadata": last_state.get("metadata", {}),
+                    })
+
+                    # Trace the step (if session tracking is enabled)
                     if session_id:
                         self.observability.trace_step(session_id, {
                             "step_idx": step_idx,
-                            "sender": step_state.sender,
-                            "node": step_state.sender,
-                            "metadata": step_state.metadata
+                            "sender": sender,
+                            "node": sender,
+                            "metadata": last_state.get("metadata", {}),
                         })
-                    # Observability: record metrics (example: step count)
-                    self.observability.record_metric("step_executed", 1, {"step_idx": step_idx, "sender": step_state.sender})
 
-                    # Save STM (current state)
+                    # Record step metric
+                    self.observability.record_metric(
+                        "step_executed", 1,
+                        {"step_idx": step_idx, "sender": sender},
+                    )
+
+                    # Persist STM (latest state) and append LTM entry
                     if session_id:
-                        self.memory_manager.save_stm(session_id, step_state.__dict__)
-                        # Save LTM (step context)
+                        self.memory_manager.save_stm(session_id, last_state)
                         self.memory_manager.append_ltm(session_id, {
-                            'step_idx': step_idx,
-                            'messages': step_state.messages,
-                            'sender': step_state.sender,
-                            'metadata': step_state.metadata
+                            "step_idx": step_idx,
+                            "messages": last_state.get("messages", []),
+                            "sender": sender,
+                            "metadata": last_state.get("metadata", {}),
                         })
 
-                    # --- Post-step plugin hooks ---
+                    # Post-step hooks
                     self.observability.run_plugin_hooks("post_step", {
                         "step_idx": step_idx,
-                        "state": step_state
+                        "state": last_state,
                     })
 
-                    break  # Success, exit retry loop
-                except Exception as e:
-                    self.observability.log_error(e, context={
+                    break  # success – exit retry loop
+
+                except Exception as exc:
+                    self.observability.log_error(exc, context={
                         "step_idx": step_idx,
-                        "sender": getattr(step_state, 'sender', None),
-                        "messages": getattr(step_state, 'messages', None),
-                        "metadata": getattr(step_state, 'metadata', None),
-                        "retry": retry_count
+                        "sender": last_state.get("sender"),
+                        "retry": retry_count,
                     })
                     retry_count += 1
                     if retry_count > self.max_retries:
-                        # Fallback: skip or abort (here: abort)
-                        raise
+                        raise  # abort after max retries
+
             step_idx += 1
-        # Final state/result
-        return step_state
+
+            # Honour max_iterations guard (defensive; graph also enforces it)
+            if step_idx >= max_iterations:
+                break
+
+        return last_state
+
 
 # Usage example:
 # orchestrator = Orchestrator()
-# result = orchestrator.run_workflow(config_json)
+# result = orchestrator.run_workflow(config_json, session_id="run-001")

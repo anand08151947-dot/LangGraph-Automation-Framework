@@ -37,4 +37,11 @@ export const MOCK_TEMPLATES: Template[] = [
   }
 ];
 
+export const MOCK_RUNS: WorkflowRun[] = [
+  { id: 'run-1', name: 'Research Task', status: WorkflowStatus.COMPLETED, startTime: '2026-03-12 17:30', logs: [] },
+  { id: 'run-2', name: 'Customer Onboarding', status: WorkflowStatus.RUNNING, startTime: '2026-03-12 17:50', logs: [] },
+  { id: 'run-3', name: 'Data Pipeline Test', status: WorkflowStatus.FAILED, startTime: '2026-03-12 16:45', logs: [] },
+  { id: 'run-4', name: 'Code Review Bot', status: WorkflowStatus.PENDING, startTime: '2026-03-12 18:00', logs: [] },
+];
+
 

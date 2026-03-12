@@ -1,0 +1,442 @@
+[
+  {
+    "use_case": "Data Pipeline with Reviewer",
+    "description": "A multi-step data pipeline where each stage is reviewed before proceeding.",
+    "sample_prompt": "Create a workflow where a DataCollector gathers data, a Reviewer checks it, a Processor transforms it, and a FinalReviewer approves before storage.",
+    "template_json": {
+      "graph_name": "Data_Pipeline_Review",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "DataCollector",
+          "type": "agent",
+          "system_prompt": "Collect raw data from sources.",
+          "tools": [
+            "data_api"
+          ],
+          "next": "Reviewer"
+        },
+        {
+          "id": "Reviewer",
+          "type": "agent",
+          "system_prompt": "Review collected data for quality. If not approved, return to DataCollector.",
+          "next": "Processor"
+        },
+        {
+          "id": "Processor",
+          "type": "agent",
+          "system_prompt": "Process and transform data.",
+          "tools": [
+            "transform_tool"
+          ],
+          "next": "FinalReviewer"
+        },
+        {
+          "id": "FinalReviewer",
+          "type": "agent",
+          "system_prompt": "Approve processed data for storage. If not approved, return to Processor.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "DataCollector",
+          "to": "Reviewer"
+        },
+        {
+          "from": "Reviewer",
+          "to": "Processor"
+        },
+        {
+          "from": "Processor",
+          "to": "FinalReviewer"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Multi-Agent Chatbot Escalation",
+    "description": "A chatbot workflow where escalation occurs to a human agent if the bot cannot resolve the issue.",
+    "sample_prompt": "Create a workflow where a Chatbot answers user queries, escalates to a Specialist if it cannot help, and finally to a HumanAgent if the Specialist cannot resolve.",
+    "template_json": {
+      "graph_name": "Chatbot_Escalation_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Chatbot",
+          "type": "agent",
+          "system_prompt": "Answer user queries. If unable, escalate to Specialist.",
+          "tools": [
+            "faq_db"
+          ],
+          "next": "Specialist"
+        },
+        {
+          "id": "Specialist",
+          "type": "agent",
+          "system_prompt": "Handle complex queries. If unable, escalate to HumanAgent.",
+          "tools": [
+            "knowledge_base"
+          ],
+          "next": "HumanAgent"
+        },
+        {
+          "id": "HumanAgent",
+          "type": "agent",
+          "system_prompt": "Resolve escalated issues.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Chatbot",
+          "to": "Specialist"
+        },
+        {
+          "from": "Specialist",
+          "to": "HumanAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Automated Code Review",
+    "description": "A workflow for automated code review and approval using MCP GitHub tools.",
+    "sample_prompt": "Create a workflow where a CodeReviewer checks PRs using GitHub MCP tools, a LeadReviewer gives final approval, and a Merger merges the PR if approved.",
+    "template_json": {
+      "graph_name": "Automated_Code_Review",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "mcp_servers": {
+        "github_tools": {
+          "type": "stdio",
+          "command": "npx",
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-github"
+          ]
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "CodeReviewer",
+          "type": "agent",
+          "system_prompt": "Review pull requests using GitHub MCP tools.",
+          "tools": [
+            "github_tools"
+          ],
+          "next": "LeadReviewer"
+        },
+        {
+          "id": "LeadReviewer",
+          "type": "agent",
+          "system_prompt": "Give final approval for PRs.",
+          "tools": [
+            "github_tools"
+          ],
+          "next": "Merger"
+        },
+        {
+          "id": "Merger",
+          "type": "agent",
+          "system_prompt": "Merge approved PRs.",
+          "tools": [
+            "github_tools"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "CodeReviewer",
+          "to": "LeadReviewer"
+        },
+        {
+          "from": "LeadReviewer",
+          "to": "Merger"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Multi-Stage Content Generation",
+    "description": "A workflow for generating, editing, and publishing content with multiple agents.",
+    "sample_prompt": "Create a workflow where a Writer drafts content, an Editor refines it, a Proofreader checks for errors, and a Publisher posts the final version.",
+    "template_json": {
+      "graph_name": "Content_Generation_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Writer",
+          "type": "agent",
+          "system_prompt": "Draft initial content.",
+          "tools": [
+            "web_search"
+          ],
+          "next": "Editor"
+        },
+        {
+          "id": "Editor",
+          "type": "agent",
+          "system_prompt": "Edit and improve the draft.",
+          "next": "Proofreader"
+        },
+        {
+          "id": "Proofreader",
+          "type": "agent",
+          "system_prompt": "Check for errors and suggest corrections.",
+          "next": "Publisher"
+        },
+        {
+          "id": "Publisher",
+          "type": "agent",
+          "system_prompt": "Publish the final content.",
+          "tools": [
+            "cms_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Writer",
+          "to": "Editor"
+        },
+        {
+          "from": "Editor",
+          "to": "Proofreader"
+        },
+        {
+          "from": "Proofreader",
+          "to": "Publisher"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Multi-Agent Research and Synthesis",
+    "description": "Agents collaborate to research, synthesize, and present findings.",
+    "sample_prompt": "Create a workflow where a Researcher gathers information, a Synthesizer combines insights, and a Presenter creates a summary report.",
+    "template_json": {
+      "graph_name": "Research_Synthesis_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Researcher",
+          "type": "agent",
+          "system_prompt": "Gather information on the topic.",
+          "tools": [
+            "web_search"
+          ],
+          "next": "Synthesizer"
+        },
+        {
+          "id": "Synthesizer",
+          "type": "agent",
+          "system_prompt": "Combine and synthesize research findings.",
+          "next": "Presenter"
+        },
+        {
+          "id": "Presenter",
+          "type": "agent",
+          "system_prompt": "Create a summary report based on synthesized findings.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Researcher",
+          "to": "Synthesizer"
+        },
+        {
+          "from": "Synthesizer",
+          "to": "Presenter"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  }
+]

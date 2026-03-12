@@ -1,0 +1,647 @@
+[
+  {
+    "use_case": "Enterprise Multi-Agent Orchestration",
+    "description": "Full enterprise workflow with a Planner, Supervisor, specialized agents (Research/Code/Data), reflection loop, human approval gate, and executor. Demonstrates conditional routing, backtracking, parallel execution, retry policy, and human-in-the-loop checkpointing.",
+    "sample_prompt": "Build an enterprise agentic workflow with a supervisor that routes to research, code, or data agents. Include a reflection loop, human approval gate, and retry policy.",
+    "template_json": {
+      "graph_name": "Enterprise_Agent_Workflow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 20,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": { "type": "graph_state" },
+        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "enterprise_memory" }
+      },
+      "mcp_servers": {
+        "github_tools": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-github"]
+        },
+        "web_search": {
+          "type": "http",
+          "endpoint": "https://api.search.example"
+        }
+      },
+      "state_schema": {
+        "task": "string",
+        "retry_count": "integer",
+        "confidence_score": "float",
+        "missing_data": "boolean",
+        "approval_required": "boolean"
+      },
+      "nodes": [
+        {
+          "id": "Planner",
+          "type": "agent",
+          "system_prompt": "Analyze the incoming request and produce a structured plan. Classify the task as one of: research, code, or data. Set the 'task' state variable accordingly.",
+          "next": "Supervisor"
+        },
+        {
+          "id": "Supervisor",
+          "type": "agent",
+          "system_prompt": "Decide which specialized agent should execute the task based on the current state. Route to ResearchAgent for research tasks, CodeAgent for code tasks, DataAgent for data tasks.",
+          "routing_logic": [
+            { "condition": "task == 'research'", "next": "ResearchAgent" },
+            { "condition": "task == 'code'", "next": "CodeAgent" },
+            { "condition": "task == 'data'", "next": "DataAgent" }
+          ]
+        },
+        {
+          "id": "ResearchAgent",
+          "type": "agent",
+          "system_prompt": "Search the web and gather relevant information for the task. Update confidence_score based on result quality. Set missing_data=true if key information is unavailable.",
+          "tools": ["web_search"],
+          "memory_access": ["long_term"],
+          "next": "ReflectionAgent"
+        },
+        {
+          "id": "CodeAgent",
+          "type": "agent",
+          "system_prompt": "Write, review, or debug code as required by the task. Use github_tools to read existing repos or push changes. Update confidence_score based on code quality.",
+          "tools": ["github_tools"],
+          "memory_access": ["long_term"],
+          "next": "TestRunner"
+        },
+        {
+          "id": "DataAgent",
+          "type": "agent",
+          "system_prompt": "Process, transform, and analyze data as required. Retrieve relevant context from long-term memory. Update confidence_score based on data completeness.",
+          "memory_access": ["long_term"],
+          "next": "ReflectionAgent"
+        },
+        {
+          "id": "TestRunner",
+          "type": "tool_node",
+          "description": "Runs automated tests on generated code. Validates correctness and coverage.",
+          "next": "ReflectionAgent"
+        },
+        {
+          "id": "ReflectionAgent",
+          "type": "agent",
+          "system_prompt": "Critically evaluate the output produced so far. Check for missing data, low confidence, or excessive retries. Update state variables to guide the next routing decision.",
+          "routing_logic": [
+            { "condition": "missing_data == true", "next": "ResearchAgent" },
+            { "condition": "confidence_score < 0.7", "next": "Supervisor" },
+            { "condition": "retry_count > 3", "next": "HumanApproval" },
+            { "condition": "confidence_score >= 0.7", "next": "ResultAggregator" }
+          ]
+        },
+        {
+          "id": "ResultAggregator",
+          "type": "agent",
+          "system_prompt": "Combine and synthesize outputs from all agents into a coherent final result. Determine whether the result requires human approval before execution.",
+          "next": "ApprovalGate"
+        },
+        {
+          "id": "ApprovalGate",
+          "type": "conditional",
+          "routing_logic": [
+            { "condition": "approval_required == true", "next": "HumanApproval" },
+            { "condition": "approval_required == false", "next": "Executor" }
+          ]
+        },
+        {
+          "id": "HumanApproval",
+          "type": "human_node",
+          "description": "Pause the workflow and wait for a human operator to review and approve before proceeding.",
+          "checkpoint": true,
+          "next": "Executor"
+        },
+        {
+          "id": "Executor",
+          "type": "agent",
+          "system_prompt": "Execute the approved action plan. Apply all changes, publish results, and summarize what was done.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        { "from": "Planner", "to": "Supervisor" },
+        { "from": "ResearchAgent", "to": "ReflectionAgent" },
+        { "from": "CodeAgent", "to": "TestRunner" },
+        { "from": "TestRunner", "to": "ReflectionAgent" },
+        { "from": "DataAgent", "to": "ReflectionAgent" },
+        { "from": "ReflectionAgent", "to": "ResearchAgent", "condition": "missing_data == true" },
+        { "from": "ReflectionAgent", "to": "Supervisor", "condition": "confidence_score < 0.7" },
+        { "from": "ReflectionAgent", "to": "HumanApproval", "condition": "retry_count > 3" },
+        { "from": "ReflectionAgent", "to": "ResultAggregator", "condition": "confidence_score >= 0.7" },
+        { "from": "ResultAggregator", "to": "ApprovalGate" },
+        { "from": "ApprovalGate", "to": "HumanApproval", "condition": "approval_required == true" },
+        { "from": "ApprovalGate", "to": "Executor", "condition": "approval_required == false" },
+        { "from": "HumanApproval", "to": "Executor" },
+        { "from": "Executor", "to": "END" }
+      ],
+      "parallel_execution": [
+        { "group": "analysis_agents", "nodes": ["ResearchAgent", "DataAgent"] }
+      ],
+      "retry_policy": { "max_retries": 3, "increment_state": "retry_count" },
+      "checkpointing": { "enabled": true, "nodes": ["HumanApproval", "ReflectionAgent"] },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+
+  {
+    "use_case": "Research & Content Generation Pipeline",
+    "description": "A two-phase pipeline: a ResearchAgent gathers web content, a WriterAgent drafts the output, and a ReviewerAgent scores quality. If the score is too low the writer iterates; above threshold it is published. Demonstrates iterative refinement and quality-gated publishing.",
+    "sample_prompt": "Create a research-to-content pipeline: search the web, write a blog post, review quality, and publish when ready.",
+    "template_json": {
+      "graph_name": "Research_Content_Pipeline",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 15,
+        "checkpoint_store": "sqlite",
+        "observability": { "tracing": true, "provider": "logging" }
+      },
+      "memory": {
+        "short_term": { "type": "graph_state" },
+        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "content_memory" }
+      },
+      "mcp_servers": {
+        "web_search": { "type": "http", "endpoint": "https://api.search.example" }
+      },
+      "state_schema": {
+        "topic": "string",
+        "research_notes": "string",
+        "draft": "string",
+        "quality_score": "float",
+        "revision_count": "integer",
+        "published": "boolean"
+      },
+      "nodes": [
+        {
+          "id": "ResearchAgent",
+          "type": "agent",
+          "system_prompt": "Search the web for information about the given topic. Compile key facts, statistics, and quotes into research_notes. Be thorough and cite sources.",
+          "tools": ["web_search"],
+          "memory_access": ["long_term"],
+          "next": "WriterAgent"
+        },
+        {
+          "id": "WriterAgent",
+          "type": "agent",
+          "system_prompt": "Using research_notes, write a compelling, well-structured blog post or article on the topic. Store the result in 'draft'. If this is a revision, address the reviewer's feedback.",
+          "next": "ReviewerAgent"
+        },
+        {
+          "id": "ReviewerAgent",
+          "type": "agent",
+          "system_prompt": "Evaluate the draft on accuracy, clarity, engagement, and SEO. Score it 0.0–1.0 and store in quality_score. Provide specific improvement notes. If quality_score >= 0.8, set published=true.",
+          "routing_logic": [
+            { "condition": "quality_score >= 0.8", "next": "Publisher" },
+            { "condition": "revision_count >= 3", "next": "Publisher" },
+            { "condition": "quality_score < 0.8", "next": "WriterAgent" }
+          ]
+        },
+        {
+          "id": "Publisher",
+          "type": "agent",
+          "system_prompt": "Finalize and format the approved draft for publication. Generate metadata (title, tags, summary). Output the publication-ready content.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        { "from": "ResearchAgent", "to": "WriterAgent" },
+        { "from": "WriterAgent", "to": "ReviewerAgent" },
+        { "from": "ReviewerAgent", "to": "WriterAgent", "condition": "quality_score < 0.8" },
+        { "from": "ReviewerAgent", "to": "Publisher", "condition": "quality_score >= 0.8" },
+        { "from": "Publisher", "to": "END" }
+      ],
+      "retry_policy": { "max_retries": 3, "increment_state": "revision_count" },
+      "checkpointing": { "enabled": true, "nodes": ["ReviewerAgent"] },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+
+  {
+    "use_case": "CI/CD Automation & Code Review Pipeline",
+    "description": "Automates code review, testing, and deployment. A CodeReviewer analyses the diff, a TestRunner executes tests, a SecurityScanner checks vulnerabilities, and a DeploymentGate either auto-deploys or escalates to human approval based on scan results.",
+    "sample_prompt": "Build a CI/CD pipeline with code review, automated testing, security scanning, and a human-gated deployment step.",
+    "template_json": {
+      "graph_name": "CICD_Automation_Pipeline",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": { "tracing": true, "provider": "logging" }
+      },
+      "memory": {
+        "short_term": { "type": "graph_state" },
+        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "cicd_memory" }
+      },
+      "mcp_servers": {
+        "github_tools": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-github"]
+        }
+      },
+      "state_schema": {
+        "repo": "string",
+        "pr_number": "string",
+        "review_passed": "boolean",
+        "tests_passed": "boolean",
+        "security_issues": "integer",
+        "deploy_approved": "boolean",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "CodeReviewer",
+          "type": "agent",
+          "system_prompt": "Review the pull request diff from the GitHub repo. Check for code quality, design patterns, and logical correctness. Set review_passed=true if acceptable, false if changes required.",
+          "tools": ["github_tools"],
+          "memory_access": ["long_term"],
+          "next": "ReviewGate"
+        },
+        {
+          "id": "ReviewGate",
+          "type": "conditional",
+          "routing_logic": [
+            { "condition": "review_passed == true", "next": "TestRunner" },
+            { "condition": "review_passed == false", "next": "FeedbackAgent" }
+          ]
+        },
+        {
+          "id": "FeedbackAgent",
+          "type": "agent",
+          "system_prompt": "Post detailed review feedback as a GitHub PR comment. List all required changes clearly.",
+          "tools": ["github_tools"],
+          "next": "END"
+        },
+        {
+          "id": "TestRunner",
+          "type": "tool_node",
+          "description": "Execute the full test suite (unit, integration, e2e). Set tests_passed=true if all pass.",
+          "next": "SecurityScanner"
+        },
+        {
+          "id": "SecurityScanner",
+          "type": "agent",
+          "system_prompt": "Run SAST/DAST security checks on the codebase. Count vulnerabilities and store in security_issues. Critical issues (security_issues > 0) block deployment.",
+          "tools": ["github_tools"],
+          "routing_logic": [
+            { "condition": "security_issues > 0", "next": "HumanApproval" },
+            { "condition": "tests_passed == false", "next": "HumanApproval" },
+            { "condition": "security_issues == 0", "next": "Deployer" }
+          ]
+        },
+        {
+          "id": "HumanApproval",
+          "type": "human_node",
+          "description": "Escalate to a human engineer to review security issues or test failures before deployment.",
+          "checkpoint": true,
+          "next": "Deployer"
+        },
+        {
+          "id": "Deployer",
+          "type": "agent",
+          "system_prompt": "Deploy the approved code to the target environment. Tag the release, update changelogs, and notify the team.",
+          "tools": ["github_tools"],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        { "from": "CodeReviewer", "to": "ReviewGate" },
+        { "from": "ReviewGate", "to": "TestRunner", "condition": "review_passed == true" },
+        { "from": "ReviewGate", "to": "FeedbackAgent", "condition": "review_passed == false" },
+        { "from": "TestRunner", "to": "SecurityScanner" },
+        { "from": "SecurityScanner", "to": "HumanApproval", "condition": "security_issues > 0" },
+        { "from": "SecurityScanner", "to": "Deployer", "condition": "security_issues == 0" },
+        { "from": "HumanApproval", "to": "Deployer" },
+        { "from": "Deployer", "to": "END" }
+      ],
+      "retry_policy": { "max_retries": 2, "increment_state": "retry_count" },
+      "checkpointing": { "enabled": true, "nodes": ["HumanApproval", "SecurityScanner"] },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+
+  {
+    "use_case": "Customer Support Triage & Resolution",
+    "description": "Routes customer tickets to the right specialist agent (billing, technical, or general). Agents attempt resolution and escalate to a human if they cannot solve within retry limits. Demonstrates supervisor-style routing, escalation, and retry state tracking.",
+    "sample_prompt": "Create a customer support system that classifies tickets and routes them to billing, technical, or general agents. Escalate unresolved tickets to a human.",
+    "template_json": {
+      "graph_name": "Customer_Support_Triage",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 12,
+        "checkpoint_store": "sqlite",
+        "observability": { "tracing": true, "provider": "logging" }
+      },
+      "memory": {
+        "short_term": { "type": "graph_state" },
+        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "support_history" }
+      },
+      "state_schema": {
+        "ticket_id": "string",
+        "category": "string",
+        "resolved": "boolean",
+        "escalated": "boolean",
+        "resolution_notes": "string",
+        "retry_count": "integer",
+        "satisfaction_score": "float"
+      },
+      "nodes": [
+        {
+          "id": "Classifier",
+          "type": "agent",
+          "system_prompt": "Read the incoming support ticket and classify it as one of: billing, technical, or general. Set the 'category' state variable accordingly. Extract the ticket_id.",
+          "next": "Router"
+        },
+        {
+          "id": "Router",
+          "type": "conditional",
+          "routing_logic": [
+            { "condition": "category == 'billing'", "next": "BillingAgent" },
+            { "condition": "category == 'technical'", "next": "TechnicalAgent" },
+            { "condition": "category == 'general'", "next": "GeneralAgent" }
+          ]
+        },
+        {
+          "id": "BillingAgent",
+          "type": "agent",
+          "system_prompt": "Handle billing-related support tickets. Check account status, resolve payment issues, apply credits. Set resolved=true and write resolution_notes if resolved.",
+          "memory_access": ["long_term"],
+          "next": "ResolutionCheck"
+        },
+        {
+          "id": "TechnicalAgent",
+          "type": "agent",
+          "system_prompt": "Troubleshoot and resolve technical support issues. Provide step-by-step instructions, log diagnostic info. Set resolved=true and write resolution_notes if resolved.",
+          "memory_access": ["long_term"],
+          "next": "ResolutionCheck"
+        },
+        {
+          "id": "GeneralAgent",
+          "type": "agent",
+          "system_prompt": "Handle general inquiries and provide helpful responses. Answer FAQs, provide documentation links. Set resolved=true and write resolution_notes if resolved.",
+          "memory_access": ["long_term"],
+          "next": "ResolutionCheck"
+        },
+        {
+          "id": "ResolutionCheck",
+          "type": "conditional",
+          "routing_logic": [
+            { "condition": "resolved == true", "next": "SatisfactionSurvey" },
+            { "condition": "retry_count >= 2", "next": "HumanEscalation" },
+            { "condition": "resolved == false", "next": "Router" }
+          ]
+        },
+        {
+          "id": "HumanEscalation",
+          "type": "human_node",
+          "description": "Escalate to a human support agent. The ticket has not been resolved after automated retries.",
+          "checkpoint": true,
+          "next": "SatisfactionSurvey"
+        },
+        {
+          "id": "SatisfactionSurvey",
+          "type": "agent",
+          "system_prompt": "Send a post-resolution satisfaction survey to the customer. Record the satisfaction_score. Thank the customer for contacting support.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        { "from": "Classifier", "to": "Router" },
+        { "from": "Router", "to": "BillingAgent", "condition": "category == 'billing'" },
+        { "from": "Router", "to": "TechnicalAgent", "condition": "category == 'technical'" },
+        { "from": "Router", "to": "GeneralAgent", "condition": "category == 'general'" },
+        { "from": "BillingAgent", "to": "ResolutionCheck" },
+        { "from": "TechnicalAgent", "to": "ResolutionCheck" },
+        { "from": "GeneralAgent", "to": "ResolutionCheck" },
+        { "from": "ResolutionCheck", "to": "SatisfactionSurvey", "condition": "resolved == true" },
+        { "from": "ResolutionCheck", "to": "HumanEscalation", "condition": "retry_count >= 2" },
+        { "from": "ResolutionCheck", "to": "Router", "condition": "resolved == false" },
+        { "from": "HumanEscalation", "to": "SatisfactionSurvey" },
+        { "from": "SatisfactionSurvey", "to": "END" }
+      ],
+      "retry_policy": { "max_retries": 2, "increment_state": "retry_count" },
+      "checkpointing": { "enabled": true, "nodes": ["HumanEscalation", "ResolutionCheck"] },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+
+  {
+    "use_case": "Data Ingestion & Analytics Pipeline",
+    "description": "An ETL-style agentic pipeline: ingests raw data, validates schema and quality, transforms and enriches it, runs analytics, and produces a report. Demonstrates sequential linear flow with quality gates and a reporting step.",
+    "sample_prompt": "Build a data pipeline that ingests raw data, validates and cleans it, runs analytics, and generates a report.",
+    "template_json": {
+      "graph_name": "Data_Analytics_Pipeline",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": { "tracing": true, "provider": "logging" }
+      },
+      "memory": {
+        "short_term": { "type": "graph_state" },
+        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "analytics_results" }
+      },
+      "state_schema": {
+        "data_source": "string",
+        "record_count": "integer",
+        "validation_passed": "boolean",
+        "error_count": "integer",
+        "insights": "string",
+        "report_url": "string"
+      },
+      "nodes": [
+        {
+          "id": "DataIngestor",
+          "type": "agent",
+          "system_prompt": "Connect to the specified data_source and load the raw data. Count the records and store in record_count. Handle connection errors gracefully.",
+          "memory_access": ["long_term"],
+          "next": "DataValidator"
+        },
+        {
+          "id": "DataValidator",
+          "type": "agent",
+          "system_prompt": "Validate the ingested data against the expected schema. Count missing, null, or malformed records and store in error_count. Set validation_passed=true if error_count is within acceptable threshold.",
+          "routing_logic": [
+            { "condition": "validation_passed == true", "next": "DataTransformer" },
+            { "condition": "validation_passed == false", "next": "DataCleaner" }
+          ]
+        },
+        {
+          "id": "DataCleaner",
+          "type": "agent",
+          "system_prompt": "Attempt to clean and repair invalid records. Remove or impute missing values. Re-validate and update error_count. Set validation_passed=true if cleaning succeeded.",
+          "next": "DataTransformer"
+        },
+        {
+          "id": "DataTransformer",
+          "type": "agent",
+          "system_prompt": "Transform, normalize, and enrich the validated data. Apply business rules and join with reference data. Store the transformed dataset in long-term memory.",
+          "memory_access": ["long_term"],
+          "next": "AnalyticsEngine"
+        },
+        {
+          "id": "AnalyticsEngine",
+          "type": "agent",
+          "system_prompt": "Run statistical analysis and generate insights from the transformed data. Identify trends, anomalies, and key metrics. Store narrative insights in the 'insights' state variable.",
+          "memory_access": ["long_term"],
+          "next": "ReportGenerator"
+        },
+        {
+          "id": "ReportGenerator",
+          "type": "agent",
+          "system_prompt": "Generate a comprehensive analytics report using the insights and data. Format it as a structured document with charts references, tables, and executive summary. Store the report_url.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        { "from": "DataIngestor", "to": "DataValidator" },
+        { "from": "DataValidator", "to": "DataTransformer", "condition": "validation_passed == true" },
+        { "from": "DataValidator", "to": "DataCleaner", "condition": "validation_passed == false" },
+        { "from": "DataCleaner", "to": "DataTransformer" },
+        { "from": "DataTransformer", "to": "AnalyticsEngine" },
+        { "from": "AnalyticsEngine", "to": "ReportGenerator" },
+        { "from": "ReportGenerator", "to": "END" }
+      ],
+      "retry_policy": { "max_retries": 2, "increment_state": "error_count" },
+      "checkpointing": { "enabled": true, "nodes": ["DataValidator", "AnalyticsEngine"] },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+
+  {
+    "use_case": "Autonomous Document Processing",
+    "description": "Processes uploaded documents end-to-end: OCR/extraction, classification, entity extraction, summarization, and routing to the correct downstream system (CRM, ERP, archive). Demonstrates parallel processing and multi-destination routing.",
+    "sample_prompt": "Build a document processing pipeline that extracts text, classifies documents, extracts entities, summarizes, and routes to the correct system.",
+    "template_json": {
+      "graph_name": "Document_Processing_Pipeline",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": { "tracing": true, "provider": "logging" }
+      },
+      "memory": {
+        "short_term": { "type": "graph_state" },
+        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "document_archive" }
+      },
+      "state_schema": {
+        "document_id": "string",
+        "document_type": "string",
+        "extracted_text": "string",
+        "entities": "string",
+        "summary": "string",
+        "confidence": "float",
+        "routed": "boolean"
+      },
+      "nodes": [
+        {
+          "id": "Extractor",
+          "type": "agent",
+          "system_prompt": "Extract all text from the input document (PDF, image, or Word). Handle OCR if needed. Store the full text in extracted_text.",
+          "next": "Classifier"
+        },
+        {
+          "id": "Classifier",
+          "type": "agent",
+          "system_prompt": "Classify the document into one of: invoice, contract, report, form, or other. Set document_type and confidence score.",
+          "routing_logic": [
+            { "condition": "confidence < 0.6", "next": "HumanReview" },
+            { "condition": "confidence >= 0.6", "next": "EntityExtractor" }
+          ]
+        },
+        {
+          "id": "HumanReview",
+          "type": "human_node",
+          "description": "Low-confidence classification. A human must confirm the document type before processing continues.",
+          "checkpoint": true,
+          "next": "EntityExtractor"
+        },
+        {
+          "id": "EntityExtractor",
+          "type": "agent",
+          "system_prompt": "Extract key entities from the document: names, dates, amounts, account numbers, addresses. Store as JSON in the 'entities' state variable.",
+          "memory_access": ["long_term"],
+          "next": "Summarizer"
+        },
+        {
+          "id": "Summarizer",
+          "type": "agent",
+          "system_prompt": "Generate a concise summary of the document highlighting key information, action items, and deadlines. Store in 'summary'.",
+          "next": "Router"
+        },
+        {
+          "id": "Router",
+          "type": "conditional",
+          "routing_logic": [
+            { "condition": "document_type == 'invoice'", "next": "ERPConnector" },
+            { "condition": "document_type == 'contract'", "next": "CRMConnector" },
+            { "condition": "document_type == 'report'", "next": "Archiver" },
+            { "condition": "document_type == 'form'", "next": "CRMConnector" },
+            { "condition": "document_type == 'other'", "next": "Archiver" }
+          ]
+        },
+        {
+          "id": "ERPConnector",
+          "type": "agent",
+          "system_prompt": "Send the extracted invoice data to the ERP system. Create a payable entry with amount, due date, and vendor details. Set routed=true.",
+          "next": "END"
+        },
+        {
+          "id": "CRMConnector",
+          "type": "agent",
+          "system_prompt": "Send the document summary and entities to the CRM system. Link to the appropriate account or opportunity. Set routed=true.",
+          "next": "END"
+        },
+        {
+          "id": "Archiver",
+          "type": "agent",
+          "system_prompt": "Archive the document with its metadata, entities, and summary in long-term memory. Apply retention policy tags. Set routed=true.",
+          "memory_access": ["long_term"],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        { "from": "Extractor", "to": "Classifier" },
+        { "from": "Classifier", "to": "HumanReview", "condition": "confidence < 0.6" },
+        { "from": "Classifier", "to": "EntityExtractor", "condition": "confidence >= 0.6" },
+        { "from": "HumanReview", "to": "EntityExtractor" },
+        { "from": "EntityExtractor", "to": "Summarizer" },
+        { "from": "Summarizer", "to": "Router" },
+        { "from": "Router", "to": "ERPConnector", "condition": "document_type == 'invoice'" },
+        { "from": "Router", "to": "CRMConnector", "condition": "document_type == 'contract'" },
+        { "from": "Router", "to": "Archiver", "condition": "document_type == 'report'" },
+        { "from": "ERPConnector", "to": "END" },
+        { "from": "CRMConnector", "to": "END" },
+        { "from": "Archiver", "to": "END" }
+      ],
+      "checkpointing": { "enabled": true, "nodes": ["HumanReview", "Classifier"] },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  }
+]

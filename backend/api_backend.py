@@ -1,7 +1,24 @@
+import sys, os as _os
+sys.path.insert(0, _os.path.dirname(__file__))
+from db import init_db, upsert_run, get_run, get_all_runs, record_to_dict, \
+    seed_templates_from_files, get_all_templates, get_template_by_name, template_record_to_dict
+init_db()
+seed_templates_from_files()
+
 from fastapi import FastAPI, Body, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 # FastAPI app instance (must be defined before route decorators)
 app = FastAPI()
+
+# Allow requests from the React dev server and any localhost origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- Enhanced Config-Driven Architecture Endpoints ---
 @app.get("/config/summary")
@@ -293,7 +310,12 @@ if 'orchestrator' in globals() and orchestrator is not None:
 
 # --- Initialize LLM Translator according to config/env ---
 llm_mode = config_mgr.get("llm", {}).get("mode", os.getenv("LLM_MODE", "openai"))
-llm_translator = LLMTranslator(mode=llm_mode)
+lm_studio_cfg = config_mgr.get("lm_studio", {})
+llm_translator = LLMTranslator(
+    mode=llm_mode,
+    lm_studio_url=lm_studio_cfg.get("url"),
+    lm_studio_model=lm_studio_cfg.get("model"),
+)
 
 # --- Memory Management Endpoints ---
 from fastapi import Body
@@ -406,17 +428,18 @@ def customize_json_llm_submit(req: CustomizeSubmitRequest):
 
 # --- Endpoints ---
 
-@app.get("/templates", response_model=List[TemplateInfo])
+@app.get("/templates")
 def get_templates():
-    templates = template_manager.list_templates()
-    return [TemplateInfo(name=f"{t.name}", description=t.description, example=t.data) for t in templates]
+    """Return all templates from the DB (seeded from prompt_templates/ files)."""
+    records = get_all_templates()
+    return [template_record_to_dict(r) for r in records]
 
 @app.get("/template/{name}")
 def get_template(name: str, version: Optional[str] = None):
-    t = template_manager.get_template(name, version)
-    if not t:
+    record = get_template_by_name(name)
+    if not record:
         raise HTTPException(status_code=404, detail="Template not found")
-    return TemplateInfo(name=t.name, description=t.description, example=t.data)
+    return template_record_to_dict(record)
 
 @app.post("/customize_template")
 def customize_template(req: CustomizationRequest):
@@ -441,23 +464,32 @@ def save_template(info: TemplateInfo, version: Optional[str] = None):
 
 
 def _run_workflow_async(run_id, config_json):
-    # Preserve any existing metadata (e.g., stored config/template) and update runtime fields
+    import time as _t
+    start = _t.time()
     workflow_status.setdefault(run_id, {})
     workflow_status[run_id].update({"status": "running", "result": None})
+    upsert_run(run_id, status="running", logs=json.dumps([f"Workflow {run_id} started."]))
     logger.info(f"Workflow {run_id} started.")
-    # Guard against missing orchestrator (e.g., missing langgraph dependency)
     if orchestrator is None:
         err = globals().get("_orchestrator_import_error", "Orchestrator not available")
         workflow_status[run_id].update({"status": "error", "result": f"Orchestrator not available: {err}"})
+        upsert_run(run_id, status="error", result=f"Orchestrator not available: {err}")
         logger.error(f"Workflow {run_id} failed: Orchestrator not available: {err}")
         return
     try:
-        # Pass run_id as session_id so STM/LTM are tracked for this run
         result = orchestrator.run_workflow(config_json, session_id=run_id)
+        elapsed = f"{_t.time() - start:.2f}s"
         workflow_status[run_id].update({"status": "completed", "result": result})
+        upsert_run(run_id, status="completed", result=result, duration=elapsed,
+                   end_time=__import__("datetime").datetime.utcnow(),
+                   logs=json.dumps([f"Workflow {run_id} completed in {elapsed}."]))
         logger.info(f"Workflow {run_id} completed.")
     except Exception as e:
+        elapsed = f"{_t.time() - start:.2f}s"
         workflow_status[run_id].update({"status": "error", "result": str(e)})
+        upsert_run(run_id, status="error", result=str(e), duration=elapsed,
+                   end_time=__import__("datetime").datetime.utcnow(),
+                   logs=json.dumps([f"Workflow {run_id} failed: {str(e)}"]))
         logger.error(f"Workflow {run_id} failed: {e}")
 
 @app.post("/orchestrate_async")
@@ -467,6 +499,9 @@ def orchestrate_async(req: OrchestrationRequest, template_name: Optional[str] = 
     # Persist initial run metadata including the submitted config (store a deep copy to avoid later mutation)
     import copy
     workflow_status[run_id] = {"status": "started", "result": None, "config": copy.deepcopy(req.config_json), "template": template_name}
+    # Derive a human-readable name from config
+    _wf_name = req.config_json.get("graph_name") or req.config_json.get("name") or (template_name if template_name else f"Run {run_id[:8]}")
+    upsert_run(run_id, name=_wf_name, status="started", config=req.config_json, template=template_name)
     thread = threading.Thread(target=_run_workflow_async, args=(run_id, req.config_json))
     thread.start()
 
@@ -566,6 +601,98 @@ async def ws_status(websocket: WebSocket, run_id: str):
 
 # --- Streaming/Async Execution (optional) ---
 # You can add WebSocket or StreamingResponse endpoints for real-time updates
+
+# --- Run History Endpoints (SQLite-backed) ---
+@app.get("/runs")
+def list_runs():
+    """List all workflow runs from DB."""
+    records = get_all_runs()
+    return [record_to_dict(r) for r in records]
+
+@app.get("/run/{run_id}")
+def get_run_detail(run_id: str):
+    """Get detailed info for a single run from DB (falls back to in-memory)."""
+    record = get_run(run_id)
+    if record:
+        return record_to_dict(record)
+    # Fallback: in-memory status
+    status = workflow_status.get(run_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {
+        "id": run_id,
+        "name": status.get("template") or f"Run {run_id[:8]}",
+        "status": status.get("status", "unknown").upper(),
+        "startTime": None,
+        "duration": None,
+        "result": _to_serializable(status.get("result")),
+        "logs": [],
+        "config": status.get("config"),
+        "template": status.get("template"),
+    }
+
+# --- Artifacts Listing Endpoint ---
+@app.get("/artifacts")
+def list_artifacts():
+    """List available run artifacts from the artifacts directory."""
+    artifacts = []
+    artifacts_dir = os.path.join(os.path.dirname(__file__), "artifacts")
+    if not os.path.exists(artifacts_dir):
+        return []
+    for entry in os.scandir(artifacts_dir):
+        if entry.is_dir():
+            # Each subdirectory is a run's artifact folder
+            for f in os.scandir(entry.path):
+                if f.is_file():
+                    size_bytes = f.stat().st_size
+                    size_str = f"{size_bytes // 1024} KB" if size_bytes >= 1024 else f"{size_bytes} B"
+                    ext = os.path.splitext(f.name)[1].lower()
+                    ftype = "json" if ext == ".json" else "code" if ext in (".py", ".js", ".ts") else "config"
+                    artifacts.append({
+                        "id": f"{entry.name}/{f.name}",
+                        "name": f.name,
+                        "type": ftype,
+                        "size": size_str,
+                        "run_id": entry.name,
+                    })
+        elif entry.is_file():
+            size_bytes = entry.stat().st_size
+            size_str = f"{size_bytes // 1024} KB" if size_bytes >= 1024 else f"{size_bytes} B"
+            ext = os.path.splitext(entry.name)[1].lower()
+            ftype = "json" if ext == ".json" else "code" if ext in (".py", ".js") else "config"
+            artifacts.append({
+                "id": entry.name,
+                "name": entry.name,
+                "type": ftype,
+                "size": size_str,
+                "run_id": None,
+            })
+    return artifacts
+
+# --- LM Studio Config Update Endpoint ---
+@app.put("/config/lm_studio")
+def update_lm_studio_config(update: dict = Body(...)):
+    """Persist LM Studio URL and model name to config.json and reload."""
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        if "lm_studio" not in cfg:
+            cfg["lm_studio"] = {}
+        if "url" in update:
+            cfg["lm_studio"]["url"] = update["url"]
+        if "model" in update:
+            cfg["lm_studio"]["model"] = update["model"]
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        # Update live translator instance
+        if "url" in update:
+            llm_translator.lm_studio_url = update["url"]
+        if "model" in update:
+            llm_translator.lm_studio_model = update["model"]
+        return {"status": "updated", "lm_studio": cfg["lm_studio"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update config: {e}")
 
 # --- Main ---
 if __name__ == "__main__":

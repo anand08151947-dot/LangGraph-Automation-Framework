@@ -25,3 +25,6 @@ langgraph
 # Optional: for .env support and async file ops
 python-dotenv
 aiofiles
+
+# Persistence layer (SQLAlchemy + SQLite)
+sqlalchemy

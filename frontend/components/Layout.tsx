@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { NAV_ITEMS } from '../constants';
+import branding from '../branding';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -10,49 +11,80 @@ interface LayoutProps {
 
 const Layout: React.FC<LayoutProps> = ({ children, activePath, onNavigate }) => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const { colors } = branding;
 
   return (
     <div className="min-h-screen flex transition-colors duration-300">
       {/* Sidebar */}
-      <aside className={`${sidebarOpen ? 'w-64' : 'w-20'} bg-slate-900 text-slate-300 transition-all duration-300 flex flex-col fixed inset-y-0 z-50`}>
-        <div className="h-16 flex items-center justify-between px-6 border-b border-slate-800">
+      <aside
+        style={{ backgroundColor: colors.sidebarBg, borderColor: colors.sidebarBorder }}
+        className={`${sidebarOpen ? 'w-64' : 'w-20'} transition-all duration-300 flex flex-col fixed inset-y-0 z-50`}
+      >
+        {/* Logo / App Name */}
+        <div
+          style={{ borderBottomColor: colors.sidebarBorder }}
+          className="h-16 flex items-center justify-between px-6 border-b"
+        >
           <div className={`flex items-center gap-3 transition-opacity duration-300 ${sidebarOpen ? 'opacity-100' : 'opacity-0 overflow-hidden'}`}>
-            <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center text-white">
-              <i className="fas fa-brain"></i>
+            {branding.logoUrl ? (
+              <img src={branding.logoUrl} alt={branding.appName} className="w-8 h-8 rounded-lg object-cover" />
+            ) : (
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white" style={{ backgroundColor: colors.accent }}>
+                <i className={`fas ${branding.logoIcon}`}></i>
+              </div>
+            )}
+            <div className={`transition-opacity ${sidebarOpen ? 'opacity-100' : 'opacity-0 w-0 overflow-hidden'}`}>
+              <span className="font-bold text-white whitespace-nowrap block leading-tight">{branding.appName}</span>
+              <span className="text-[10px] whitespace-nowrap block leading-tight" style={{ color: colors.accentLight }}>{branding.slogan}</span>
             </div>
-            <span className="font-bold text-white whitespace-nowrap">Agentic Workbench</span>
           </div>
-          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="text-slate-400 hover:text-white">
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            style={{ color: colors.sidebarText }}
+            className="hover:text-white flex-shrink-0 transition-colors"
+          >
             <i className={`fas ${sidebarOpen ? 'fa-angle-left' : 'fa-angle-right'}`}></i>
           </button>
         </div>
 
+        {/* Nav Items */}
         <nav className="flex-1 mt-6 px-3 space-y-1">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.path}
-              onClick={() => onNavigate(item.path)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
-                activePath === item.path 
-                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
-                : 'hover:bg-slate-800 text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <div className="w-6 text-center">{item.icon}</div>
-              <span className={`font-medium transition-opacity ${sidebarOpen ? 'opacity-100' : 'opacity-0 w-0 overflow-hidden'}`}>
-                {item.label}
-              </span>
-            </button>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const isActive = activePath === item.path;
+            return (
+              <button
+                key={item.path}
+                onClick={() => onNavigate(item.path)}
+                style={isActive
+                  ? { backgroundColor: colors.accent, color: '#ffffff', boxShadow: `0 4px 14px ${colors.accent}55` }
+                  : { color: colors.sidebarText }
+                }
+                onMouseEnter={e => { if (!isActive) { (e.currentTarget as HTMLElement).style.backgroundColor = colors.sidebarItemHover; (e.currentTarget as HTMLElement).style.color = colors.sidebarTextHover; } }}
+                onMouseLeave={e => { if (!isActive) { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; (e.currentTarget as HTMLElement).style.color = colors.sidebarText; } }}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all text-left"
+              >
+                <div className="w-6 text-center">{item.icon}</div>
+                <span className={`font-medium transition-opacity ${sidebarOpen ? 'opacity-100' : 'opacity-0 w-0 overflow-hidden'}`}>
+                  {item.label}
+                </span>
+              </button>
+            );
+          })}
         </nav>
 
-        <div className="p-4 border-t border-slate-800">
+        {/* User Profile */}
+        <div className="p-4 border-t" style={{ borderTopColor: colors.sidebarBorder }}>
           <div className={`flex items-center gap-3 ${sidebarOpen ? '' : 'justify-center'}`}>
-            <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs">JD</div>
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center text-xs text-white font-medium"
+              style={{ backgroundColor: colors.accentDark }}
+            >
+              {branding.user.initials}
+            </div>
             {sidebarOpen && (
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-white truncate">John Doe</p>
-                <p className="text-xs text-slate-500 truncate">Pro Plan</p>
+                <p className="text-sm font-medium text-white truncate">{branding.user.name}</p>
+                <p className="text-xs truncate" style={{ color: colors.sidebarText }}>{branding.user.plan}</p>
               </div>
             )}
           </div>
@@ -74,7 +106,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activePath, onNavigate }) => 
               <i className="fas fa-search"></i>
             </button>
             <div className="h-8 w-[1px] bg-slate-200 mx-2"></div>
-            <button className="text-sm font-medium text-slate-600 hover:text-indigo-600">
+            <button className="text-sm font-medium text-slate-600 transition-colors" style={{ color: undefined }}
+              onMouseEnter={e => (e.currentTarget.style.color = colors.accent)}
+              onMouseLeave={e => (e.currentTarget.style.color = '')}
+            >
               Support
             </button>
           </div>

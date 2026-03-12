@@ -5,7 +5,7 @@ import {
   customizeJsonLLM,
   orchestrateAsync,
   getStatus
-} from '../api';
+} from '../services/api';
 import {
   WorkflowConfig,
   SaveTemplateRequest,

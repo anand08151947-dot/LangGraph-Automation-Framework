@@ -1,23 +1,16 @@
 import { useState } from 'react';
-import { downloadBundle } from '../api';
+import { downloadBundle, getArtifacts } from '../services/api';
 import { Artifact } from '../types';
-
-// Placeholder: Replace with real API call to fetch artifacts
-const fetchArtifacts = async (): Promise<Artifact[]> => {
-  // TODO: Replace with backend call (e.g., /artifacts or from workflow status)
-  return [];
-};
 
 export function useExportArtifacts() {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch available artifacts (replace with real API logic)
   const loadArtifacts = async () => {
     setLoading(true); setError(null);
     try {
-      const data = await fetchArtifacts();
+      const data = await getArtifacts();
       setArtifacts(data);
     } catch (e: any) {
       setError(e?.message || 'Failed to load artifacts');

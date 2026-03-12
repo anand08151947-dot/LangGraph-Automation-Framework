@@ -1,0 +1,489 @@
+[
+  {
+    "use_case": "Hospitality Guest Experience",
+    "description": "Automated workflow for guest check-in, concierge service, room service, and feedback collection in hospitality.",
+    "sample_prompt": "Create a workflow where a CheckInAgent handles guest arrival, a ConciergeAgent manages requests, a RoomServiceAgent delivers services, and a FeedbackAgent collects guest feedback.",
+    "template_json": {
+      "graph_name": "Guest_Experience_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "CheckInAgent",
+          "type": "agent",
+          "system_prompt": "Handle guest check-in and registration.",
+          "tools": [
+            "checkin_api"
+          ],
+          "next": "ConciergeAgent"
+        },
+        {
+          "id": "ConciergeAgent",
+          "type": "agent",
+          "system_prompt": "Manage guest requests and reservations.",
+          "tools": [
+            "concierge_api"
+          ],
+          "next": "RoomServiceAgent"
+        },
+        {
+          "id": "RoomServiceAgent",
+          "type": "agent",
+          "system_prompt": "Deliver room service and amenities.",
+          "tools": [
+            "room_service_api"
+          ],
+          "next": "FeedbackAgent"
+        },
+        {
+          "id": "FeedbackAgent",
+          "type": "agent",
+          "system_prompt": "Collect guest feedback and ratings.",
+          "tools": [
+            "feedback_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "CheckInAgent",
+          "to": "ConciergeAgent"
+        },
+        {
+          "from": "ConciergeAgent",
+          "to": "RoomServiceAgent"
+        },
+        {
+          "from": "RoomServiceAgent",
+          "to": "FeedbackAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Pharmaceutical Drug Approval",
+    "description": "Multi-agent workflow for drug submission, clinical review, regulatory approval, and market release.",
+    "sample_prompt": "Create a workflow where a Submitter files a drug application, a ClinicalReviewer checks trial data, a Regulator approves the drug, and a Marketer releases it to market.",
+    "template_json": {
+      "graph_name": "Drug_Approval_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Submitter",
+          "type": "agent",
+          "system_prompt": "File drug application and documentation.",
+          "tools": [
+            "submission_api"
+          ],
+          "next": "ClinicalReviewer"
+        },
+        {
+          "id": "ClinicalReviewer",
+          "type": "agent",
+          "system_prompt": "Review clinical trial data and safety.",
+          "tools": [
+            "clinical_api"
+          ],
+          "next": "Regulator"
+        },
+        {
+          "id": "Regulator",
+          "type": "agent",
+          "system_prompt": "Approve drug for market release.",
+          "tools": [
+            "regulatory_api"
+          ],
+          "next": "Marketer"
+        },
+        {
+          "id": "Marketer",
+          "type": "agent",
+          "system_prompt": "Release approved drug to market.",
+          "tools": [
+            "marketing_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Submitter",
+          "to": "ClinicalReviewer"
+        },
+        {
+          "from": "ClinicalReviewer",
+          "to": "Regulator"
+        },
+        {
+          "from": "Regulator",
+          "to": "Marketer"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Environmental Impact Assessment",
+    "description": "Automated workflow for project data collection, impact analysis, review, and approval in environmental sector.",
+    "sample_prompt": "Create a workflow where a DataCollector gathers project data, an Analyst assesses environmental impact, a Reviewer checks compliance, and an Approver grants approval.",
+    "template_json": {
+      "graph_name": "Environmental_Assessment_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "DataCollector",
+          "type": "agent",
+          "system_prompt": "Gather project and site data for assessment.",
+          "tools": [
+            "data_api"
+          ],
+          "next": "Analyst"
+        },
+        {
+          "id": "Analyst",
+          "type": "agent",
+          "system_prompt": "Assess environmental impact and risks.",
+          "tools": [
+            "impact_tool"
+          ],
+          "next": "Reviewer"
+        },
+        {
+          "id": "Reviewer",
+          "type": "agent",
+          "system_prompt": "Review assessment for compliance and completeness.",
+          "tools": [
+            "compliance_api"
+          ],
+          "next": "Approver"
+        },
+        {
+          "id": "Approver",
+          "type": "agent",
+          "system_prompt": "Grant approval for project if compliant.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "DataCollector",
+          "to": "Analyst"
+        },
+        {
+          "from": "Analyst",
+          "to": "Reviewer"
+        },
+        {
+          "from": "Reviewer",
+          "to": "Approver"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Food Safety Inspection",
+    "description": "Multi-agent workflow for food safety inspection, lab testing, compliance review, and certification.",
+    "sample_prompt": "Create a workflow where an Inspector checks food facilities, a LabAgent tests samples, a ComplianceAgent reviews results, and a Certifier issues certification.",
+    "template_json": {
+      "graph_name": "Food_Safety_Inspection_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Inspector",
+          "type": "agent",
+          "system_prompt": "Inspect food facilities for safety standards.",
+          "tools": [
+            "inspection_api"
+          ],
+          "next": "LabAgent"
+        },
+        {
+          "id": "LabAgent",
+          "type": "agent",
+          "system_prompt": "Test food samples in laboratory.",
+          "tools": [
+            "lab_api"
+          ],
+          "next": "ComplianceAgent"
+        },
+        {
+          "id": "ComplianceAgent",
+          "type": "agent",
+          "system_prompt": "Review lab results for compliance.",
+          "tools": [
+            "compliance_api"
+          ],
+          "next": "Certifier"
+        },
+        {
+          "id": "Certifier",
+          "type": "agent",
+          "system_prompt": "Issue food safety certification.",
+          "tools": [
+            "certification_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Inspector",
+          "to": "LabAgent"
+        },
+        {
+          "from": "LabAgent",
+          "to": "ComplianceAgent"
+        },
+        {
+          "from": "ComplianceAgent",
+          "to": "Certifier"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Automotive Service Workflow",
+    "description": "Automated workflow for vehicle service booking, diagnosis, repair, and customer feedback in automotive sector.",
+    "sample_prompt": "Create a workflow where a BookingAgent schedules service, a DiagnosticAgent diagnoses issues, a RepairAgent fixes the vehicle, and a FeedbackAgent collects customer feedback.",
+    "template_json": {
+      "graph_name": "Automotive_Service_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "BookingAgent",
+          "type": "agent",
+          "system_prompt": "Schedule vehicle service appointment.",
+          "tools": [
+            "booking_api"
+          ],
+          "next": "DiagnosticAgent"
+        },
+        {
+          "id": "DiagnosticAgent",
+          "type": "agent",
+          "system_prompt": "Diagnose vehicle issues and recommend repairs.",
+          "tools": [
+            "diagnostic_tool"
+          ],
+          "next": "RepairAgent"
+        },
+        {
+          "id": "RepairAgent",
+          "type": "agent",
+          "system_prompt": "Repair vehicle and update service record.",
+          "tools": [
+            "repair_api"
+          ],
+          "next": "FeedbackAgent"
+        },
+        {
+          "id": "FeedbackAgent",
+          "type": "agent",
+          "system_prompt": "Collect customer feedback after service.",
+          "tools": [
+            "feedback_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "BookingAgent",
+          "to": "DiagnosticAgent"
+        },
+        {
+          "from": "DiagnosticAgent",
+          "to": "RepairAgent"
+        },
+        {
+          "from": "RepairAgent",
+          "to": "FeedbackAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  }
+]

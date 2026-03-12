@@ -1,0 +1,483 @@
+[
+  {
+    "use_case": "Healthcare Patient Intake",
+    "description": "Automated patient intake workflow with triage, doctor assignment, and follow-up.",
+    "sample_prompt": "Create a workflow where an IntakeAgent collects patient info, a TriageAgent assesses urgency, a DoctorAgent provides care, and a FollowUpAgent schedules follow-up.",
+    "template_json": {
+      "graph_name": "Patient_Intake_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "IntakeAgent",
+          "type": "agent",
+          "system_prompt": "Collect patient information and symptoms.",
+          "tools": [
+            "ehr_api"
+          ],
+          "next": "TriageAgent"
+        },
+        {
+          "id": "TriageAgent",
+          "type": "agent",
+          "system_prompt": "Assess urgency and assign to appropriate doctor.",
+          "tools": [
+            "triage_tool"
+          ],
+          "next": "DoctorAgent"
+        },
+        {
+          "id": "DoctorAgent",
+          "type": "agent",
+          "system_prompt": "Provide medical care and instructions.",
+          "tools": [
+            "ehr_api"
+          ],
+          "next": "FollowUpAgent"
+        },
+        {
+          "id": "FollowUpAgent",
+          "type": "agent",
+          "system_prompt": "Schedule follow-up appointment and send reminders.",
+          "tools": [
+            "calendar_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "IntakeAgent",
+          "to": "TriageAgent"
+        },
+        {
+          "from": "TriageAgent",
+          "to": "DoctorAgent"
+        },
+        {
+          "from": "DoctorAgent",
+          "to": "FollowUpAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Legal Document Review",
+    "description": "Multi-agent legal document review and approval workflow.",
+    "sample_prompt": "Create a workflow where a Collector gathers documents, a Reviewer checks for compliance, a LawyerAgent provides legal advice, and an Approver finalizes the review.",
+    "template_json": {
+      "graph_name": "Legal_Document_Review_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Collector",
+          "type": "agent",
+          "system_prompt": "Collect legal documents for review.",
+          "tools": [
+            "doc_api"
+          ],
+          "next": "Reviewer"
+        },
+        {
+          "id": "Reviewer",
+          "type": "agent",
+          "system_prompt": "Review documents for compliance and completeness.",
+          "tools": [
+            "compliance_tool"
+          ],
+          "next": "LawyerAgent"
+        },
+        {
+          "id": "LawyerAgent",
+          "type": "agent",
+          "system_prompt": "Provide legal advice and flag issues.",
+          "tools": [
+            "legal_db"
+          ],
+          "next": "Approver"
+        },
+        {
+          "id": "Approver",
+          "type": "agent",
+          "system_prompt": "Finalize review and approve documents.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Collector",
+          "to": "Reviewer"
+        },
+        {
+          "from": "Reviewer",
+          "to": "LawyerAgent"
+        },
+        {
+          "from": "LawyerAgent",
+          "to": "Approver"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Education Course Creation",
+    "description": "Automated course creation workflow with curriculum design, content writing, review, and publishing.",
+    "sample_prompt": "Create a workflow where a Designer creates curriculum, a Writer drafts lessons, a Reviewer checks quality, and a Publisher posts the course.",
+    "template_json": {
+      "graph_name": "Course_Creation_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Designer",
+          "type": "agent",
+          "system_prompt": "Design course curriculum and structure.",
+          "tools": [
+            "curriculum_api"
+          ],
+          "next": "Writer"
+        },
+        {
+          "id": "Writer",
+          "type": "agent",
+          "system_prompt": "Draft lesson content for the course.",
+          "tools": [
+            "content_tool"
+          ],
+          "next": "Reviewer"
+        },
+        {
+          "id": "Reviewer",
+          "type": "agent",
+          "system_prompt": "Review lessons for quality and accuracy.",
+          "next": "Publisher"
+        },
+        {
+          "id": "Publisher",
+          "type": "agent",
+          "system_prompt": "Publish the course to the platform.",
+          "tools": [
+            "lms_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Designer",
+          "to": "Writer"
+        },
+        {
+          "from": "Writer",
+          "to": "Reviewer"
+        },
+        {
+          "from": "Reviewer",
+          "to": "Publisher"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Supply Chain Management",
+    "description": "Multi-agent workflow for supply chain order processing, tracking, and delivery confirmation.",
+    "sample_prompt": "Create a workflow where an OrderAgent processes orders, a Tracker monitors shipments, a DeliveryAgent confirms delivery, and a FeedbackAgent collects customer feedback.",
+    "template_json": {
+      "graph_name": "Supply_Chain_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "OrderAgent",
+          "type": "agent",
+          "system_prompt": "Process supply chain orders.",
+          "tools": [
+            "order_api"
+          ],
+          "next": "Tracker"
+        },
+        {
+          "id": "Tracker",
+          "type": "agent",
+          "system_prompt": "Track shipment status and location.",
+          "tools": [
+            "tracking_api"
+          ],
+          "next": "DeliveryAgent"
+        },
+        {
+          "id": "DeliveryAgent",
+          "type": "agent",
+          "system_prompt": "Confirm delivery with customer.",
+          "tools": [
+            "delivery_api"
+          ],
+          "next": "FeedbackAgent"
+        },
+        {
+          "id": "FeedbackAgent",
+          "type": "agent",
+          "system_prompt": "Collect customer feedback after delivery.",
+          "tools": [
+            "survey_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "OrderAgent",
+          "to": "Tracker"
+        },
+        {
+          "from": "Tracker",
+          "to": "DeliveryAgent"
+        },
+        {
+          "from": "DeliveryAgent",
+          "to": "FeedbackAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Real Estate Property Listing",
+    "description": "Automated property listing workflow with data collection, agent review, legal check, and publishing.",
+    "sample_prompt": "Create a workflow where a Collector gathers property data, an Agent reviews details, a LegalAgent checks compliance, and a Publisher lists the property.",
+    "template_json": {
+      "graph_name": "Property_Listing_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Collector",
+          "type": "agent",
+          "system_prompt": "Collect property data and images.",
+          "tools": [
+            "property_api"
+          ],
+          "next": "Agent"
+        },
+        {
+          "id": "Agent",
+          "type": "agent",
+          "system_prompt": "Review property details and images.",
+          "next": "LegalAgent"
+        },
+        {
+          "id": "LegalAgent",
+          "type": "agent",
+          "system_prompt": "Check property for legal compliance.",
+          "tools": [
+            "legal_db"
+          ],
+          "next": "Publisher"
+        },
+        {
+          "id": "Publisher",
+          "type": "agent",
+          "system_prompt": "List the property on the platform.",
+          "tools": [
+            "listing_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Collector",
+          "to": "Agent"
+        },
+        {
+          "from": "Agent",
+          "to": "LegalAgent"
+        },
+        {
+          "from": "LegalAgent",
+          "to": "Publisher"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  }
+]

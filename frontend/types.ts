@@ -89,6 +89,20 @@ export interface WorkflowRun {
   status: WorkflowStatus;
   startTime: string;
   logs: string[];
+  duration?: string;
+  memory?: string;
+  successRate?: number;
+  config?: any;
+}
+
+export interface TemplateInfo {
+  name: string;
+  use_case?: string;
+  description?: string;
+  sample_prompt?: string;
+  example?: Record<string, unknown>;
+  source_file?: string;
+  version?: string;
 }
 
 export interface Artifact {

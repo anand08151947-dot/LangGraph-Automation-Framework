@@ -1,0 +1,486 @@
+[
+  {
+    "use_case": "Nonprofit Grant Application",
+    "description": "Automated workflow for grant application, review, approval, and fund disbursement in nonprofit sector.",
+    "sample_prompt": "Create a workflow where an Applicant submits a grant request, a Reviewer checks eligibility, an Approver authorizes the grant, and a Disburser releases funds.",
+    "template_json": {
+      "graph_name": "Grant_Application_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Applicant",
+          "type": "agent",
+          "system_prompt": "Submit grant application and supporting documents.",
+          "tools": [
+            "application_api"
+          ],
+          "next": "Reviewer"
+        },
+        {
+          "id": "Reviewer",
+          "type": "agent",
+          "system_prompt": "Review application for eligibility and completeness.",
+          "tools": [
+            "review_tool"
+          ],
+          "next": "Approver"
+        },
+        {
+          "id": "Approver",
+          "type": "agent",
+          "system_prompt": "Authorize grant if approved.",
+          "next": "Disburser"
+        },
+        {
+          "id": "Disburser",
+          "type": "agent",
+          "system_prompt": "Disburse grant funds to applicant.",
+          "tools": [
+            "funds_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Applicant",
+          "to": "Reviewer"
+        },
+        {
+          "from": "Reviewer",
+          "to": "Approver"
+        },
+        {
+          "from": "Approver",
+          "to": "Disburser"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Publishing Peer Review",
+    "description": "Multi-agent workflow for academic publishing: submission, peer review, editorial decision, and publication.",
+    "sample_prompt": "Create a workflow where a Submitter sends a manuscript, a PeerReviewer evaluates it, an Editor makes a decision, and a Publisher posts the article.",
+    "template_json": {
+      "graph_name": "Peer_Review_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Submitter",
+          "type": "agent",
+          "system_prompt": "Submit manuscript for review.",
+          "tools": [
+            "submission_api"
+          ],
+          "next": "PeerReviewer"
+        },
+        {
+          "id": "PeerReviewer",
+          "type": "agent",
+          "system_prompt": "Review manuscript for quality and relevance.",
+          "tools": [
+            "review_tool"
+          ],
+          "next": "Editor"
+        },
+        {
+          "id": "Editor",
+          "type": "agent",
+          "system_prompt": "Make editorial decision on manuscript.",
+          "next": "Publisher"
+        },
+        {
+          "id": "Publisher",
+          "type": "agent",
+          "system_prompt": "Publish accepted manuscript.",
+          "tools": [
+            "publishing_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Submitter",
+          "to": "PeerReviewer"
+        },
+        {
+          "from": "PeerReviewer",
+          "to": "Editor"
+        },
+        {
+          "from": "Editor",
+          "to": "Publisher"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Sports Team Management",
+    "description": "Automated workflow for team roster management, training scheduling, match planning, and performance review.",
+    "sample_prompt": "Create a workflow where a RosterManager updates team roster, a Trainer schedules training, a MatchPlanner organizes matches, and a Reviewer analyzes performance.",
+    "template_json": {
+      "graph_name": "Team_Management_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "RosterManager",
+          "type": "agent",
+          "system_prompt": "Update and manage team roster.",
+          "tools": [
+            "roster_api"
+          ],
+          "next": "Trainer"
+        },
+        {
+          "id": "Trainer",
+          "type": "agent",
+          "system_prompt": "Schedule and manage team training sessions.",
+          "tools": [
+            "training_api"
+          ],
+          "next": "MatchPlanner"
+        },
+        {
+          "id": "MatchPlanner",
+          "type": "agent",
+          "system_prompt": "Plan and organize team matches.",
+          "tools": [
+            "match_api"
+          ],
+          "next": "Reviewer"
+        },
+        {
+          "id": "Reviewer",
+          "type": "agent",
+          "system_prompt": "Review team performance and provide feedback.",
+          "tools": [
+            "review_tool"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "RosterManager",
+          "to": "Trainer"
+        },
+        {
+          "from": "Trainer",
+          "to": "MatchPlanner"
+        },
+        {
+          "from": "MatchPlanner",
+          "to": "Reviewer"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Art Gallery Exhibition Planning",
+    "description": "Multi-agent workflow for exhibition planning, artist coordination, installation, and event promotion.",
+    "sample_prompt": "Create a workflow where a Planner organizes the exhibition, a Coordinator manages artists, an Installer sets up artwork, and a Promoter advertises the event.",
+    "template_json": {
+      "graph_name": "Exhibition_Planning_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Planner",
+          "type": "agent",
+          "system_prompt": "Organize exhibition details and schedule.",
+          "tools": [
+            "planning_api"
+          ],
+          "next": "Coordinator"
+        },
+        {
+          "id": "Coordinator",
+          "type": "agent",
+          "system_prompt": "Coordinate with artists and manage logistics.",
+          "tools": [
+            "coordination_tool"
+          ],
+          "next": "Installer"
+        },
+        {
+          "id": "Installer",
+          "type": "agent",
+          "system_prompt": "Install artwork and prepare exhibition space.",
+          "tools": [
+            "installation_api"
+          ],
+          "next": "Promoter"
+        },
+        {
+          "id": "Promoter",
+          "type": "agent",
+          "system_prompt": "Promote the exhibition and attract visitors.",
+          "tools": [
+            "promotion_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Planner",
+          "to": "Coordinator"
+        },
+        {
+          "from": "Coordinator",
+          "to": "Installer"
+        },
+        {
+          "from": "Installer",
+          "to": "Promoter"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Space Mission Planning",
+    "description": "Automated workflow for mission design, crew assignment, launch preparation, and mission execution in aerospace.",
+    "sample_prompt": "Create a workflow where a Designer plans the mission, a CrewManager assigns crew, a LaunchPrepAgent prepares for launch, and an Executor runs the mission.",
+    "template_json": {
+      "graph_name": "Space_Mission_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Designer",
+          "type": "agent",
+          "system_prompt": "Design space mission objectives and parameters.",
+          "tools": [
+            "mission_api"
+          ],
+          "next": "CrewManager"
+        },
+        {
+          "id": "CrewManager",
+          "type": "agent",
+          "system_prompt": "Assign crew members and manage training.",
+          "tools": [
+            "crew_api"
+          ],
+          "next": "LaunchPrepAgent"
+        },
+        {
+          "id": "LaunchPrepAgent",
+          "type": "agent",
+          "system_prompt": "Prepare spacecraft and crew for launch.",
+          "tools": [
+            "prep_api"
+          ],
+          "next": "Executor"
+        },
+        {
+          "id": "Executor",
+          "type": "agent",
+          "system_prompt": "Execute mission and monitor progress.",
+          "tools": [
+            "execution_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Designer",
+          "to": "CrewManager"
+        },
+        {
+          "from": "CrewManager",
+          "to": "LaunchPrepAgent"
+        },
+        {
+          "from": "LaunchPrepAgent",
+          "to": "Executor"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  }
+]

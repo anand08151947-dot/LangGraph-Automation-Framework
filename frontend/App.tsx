@@ -9,32 +9,34 @@ import MonitorView from './views/MonitorView';
 import ExportView from './views/ExportView';
 import SettingsView from './views/SettingsView';
 import HelpView from './views/HelpView';
+import { TemplateInfo } from './types';
 
 const App: React.FC = () => {
   const [currentPath, setCurrentPath] = useState('/');
+  const [builderTemplate, setBuilderTemplate] = useState<TemplateInfo | null>(null);
 
-  // Simple hash routing handling
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash.replace('#', '') || '/';
       setCurrentPath(hash);
     };
-
     window.addEventListener('hashchange', handleHashChange);
-    handleHashChange(); // Initial check
-
+    handleHashChange();
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  const navigate = (path: string) => {
+  const navigate = (path: string, data?: any) => {
+    if (path === '/builder' && data?.template) {
+      setBuilderTemplate(data.template as TemplateInfo);
+    }
     window.location.hash = path;
   };
 
   const renderContent = () => {
     switch (currentPath) {
       case '/': return <DashboardView onNavigate={navigate} />;
-      case '/templates': return <TemplatesView />;
-      case '/builder': return <BuilderView />;
+      case '/templates': return <TemplatesView onNavigate={navigate} />;
+      case '/builder': return <BuilderView key={builderTemplate?.name ?? '__empty__'} initialTemplate={builderTemplate} onNavigate={navigate} />;
       case '/translation': return <TranslationView />;
       case '/monitor': return <MonitorView />;
       case '/export': return <ExportView />;

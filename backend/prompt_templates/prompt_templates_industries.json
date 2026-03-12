@@ -1,0 +1,486 @@
+[
+  {
+    "use_case": "Insurance Claim Processing",
+    "description": "Automated workflow for insurance claim intake, assessment, approval, and payout.",
+    "sample_prompt": "Create a workflow where a ClaimIntakeAgent collects claim details, an Assessor evaluates the claim, an Approver authorizes payout, and a PayoutAgent processes payment.",
+    "template_json": {
+      "graph_name": "Insurance_Claim_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "ClaimIntakeAgent",
+          "type": "agent",
+          "system_prompt": "Collect insurance claim details from customer.",
+          "tools": [
+            "claim_api"
+          ],
+          "next": "Assessor"
+        },
+        {
+          "id": "Assessor",
+          "type": "agent",
+          "system_prompt": "Evaluate claim validity and required documentation.",
+          "tools": [
+            "assessment_tool"
+          ],
+          "next": "Approver"
+        },
+        {
+          "id": "Approver",
+          "type": "agent",
+          "system_prompt": "Authorize claim payout if approved.",
+          "next": "PayoutAgent"
+        },
+        {
+          "id": "PayoutAgent",
+          "type": "agent",
+          "system_prompt": "Process payment to customer and close claim.",
+          "tools": [
+            "payment_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "ClaimIntakeAgent",
+          "to": "Assessor"
+        },
+        {
+          "from": "Assessor",
+          "to": "Approver"
+        },
+        {
+          "from": "Approver",
+          "to": "PayoutAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Retail Order Fulfillment",
+    "description": "Multi-agent workflow for retail order processing, inventory check, packing, and shipping.",
+    "sample_prompt": "Create a workflow where an OrderAgent receives orders, an InventoryAgent checks stock, a PackingAgent prepares shipment, and a ShippingAgent dispatches the order.",
+    "template_json": {
+      "graph_name": "Retail_Order_Fulfillment_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "OrderAgent",
+          "type": "agent",
+          "system_prompt": "Receive and process retail orders.",
+          "tools": [
+            "order_api"
+          ],
+          "next": "InventoryAgent"
+        },
+        {
+          "id": "InventoryAgent",
+          "type": "agent",
+          "system_prompt": "Check inventory for ordered items.",
+          "tools": [
+            "inventory_api"
+          ],
+          "next": "PackingAgent"
+        },
+        {
+          "id": "PackingAgent",
+          "type": "agent",
+          "system_prompt": "Pack items for shipment.",
+          "tools": [
+            "packing_tool"
+          ],
+          "next": "ShippingAgent"
+        },
+        {
+          "id": "ShippingAgent",
+          "type": "agent",
+          "system_prompt": "Ship order to customer and update status.",
+          "tools": [
+            "shipping_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "OrderAgent",
+          "to": "InventoryAgent"
+        },
+        {
+          "from": "InventoryAgent",
+          "to": "PackingAgent"
+        },
+        {
+          "from": "PackingAgent",
+          "to": "ShippingAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Energy Grid Monitoring",
+    "description": "Automated workflow for monitoring, alerting, and maintenance in energy grids.",
+    "sample_prompt": "Create a workflow where a MonitorAgent tracks grid status, an AlertAgent notifies of anomalies, a MaintenanceAgent schedules repairs, and a ReportAgent logs outcomes.",
+    "template_json": {
+      "graph_name": "Energy_Grid_Monitoring_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "MonitorAgent",
+          "type": "agent",
+          "system_prompt": "Monitor energy grid status and performance.",
+          "tools": [
+            "grid_api"
+          ],
+          "next": "AlertAgent"
+        },
+        {
+          "id": "AlertAgent",
+          "type": "agent",
+          "system_prompt": "Notify stakeholders of grid anomalies.",
+          "tools": [
+            "alert_api"
+          ],
+          "next": "MaintenanceAgent"
+        },
+        {
+          "id": "MaintenanceAgent",
+          "type": "agent",
+          "system_prompt": "Schedule and perform grid maintenance.",
+          "tools": [
+            "maintenance_tool"
+          ],
+          "next": "ReportAgent"
+        },
+        {
+          "id": "ReportAgent",
+          "type": "agent",
+          "system_prompt": "Log maintenance outcomes and update records.",
+          "tools": [
+            "reporting_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "MonitorAgent",
+          "to": "AlertAgent"
+        },
+        {
+          "from": "AlertAgent",
+          "to": "MaintenanceAgent"
+        },
+        {
+          "from": "MaintenanceAgent",
+          "to": "ReportAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Travel Booking Workflow",
+    "description": "Multi-agent travel booking process with itinerary planning, booking, payment, and confirmation.",
+    "sample_prompt": "Create a workflow where a Planner creates an itinerary, a BookingAgent books travel, a PaymentAgent processes payment, and a ConfirmationAgent sends booking details.",
+    "template_json": {
+      "graph_name": "Travel_Booking_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Planner",
+          "type": "agent",
+          "system_prompt": "Plan travel itinerary for customer.",
+          "tools": [
+            "itinerary_api"
+          ],
+          "next": "BookingAgent"
+        },
+        {
+          "id": "BookingAgent",
+          "type": "agent",
+          "system_prompt": "Book travel and accommodations.",
+          "tools": [
+            "booking_api"
+          ],
+          "next": "PaymentAgent"
+        },
+        {
+          "id": "PaymentAgent",
+          "type": "agent",
+          "system_prompt": "Process payment for bookings.",
+          "tools": [
+            "payment_api"
+          ],
+          "next": "ConfirmationAgent"
+        },
+        {
+          "id": "ConfirmationAgent",
+          "type": "agent",
+          "system_prompt": "Send booking confirmation to customer.",
+          "tools": [
+            "email_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Planner",
+          "to": "BookingAgent"
+        },
+        {
+          "from": "BookingAgent",
+          "to": "PaymentAgent"
+        },
+        {
+          "from": "PaymentAgent",
+          "to": "ConfirmationAgent"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Manufacturing Quality Control",
+    "description": "Automated workflow for product inspection, defect analysis, rework, and approval in manufacturing.",
+    "sample_prompt": "Create a workflow where an Inspector checks products, an Analyst reviews defects, a ReworkAgent manages rework, and an Approver finalizes quality approval.",
+    "template_json": {
+      "graph_name": "Manufacturing_Quality_Control_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Inspector",
+          "type": "agent",
+          "system_prompt": "Inspect manufactured products for defects.",
+          "tools": [
+            "inspection_tool"
+          ],
+          "next": "Analyst"
+        },
+        {
+          "id": "Analyst",
+          "type": "agent",
+          "system_prompt": "Analyze defects and recommend actions.",
+          "tools": [
+            "analysis_tool"
+          ],
+          "next": "ReworkAgent"
+        },
+        {
+          "id": "ReworkAgent",
+          "type": "agent",
+          "system_prompt": "Manage product rework and repairs.",
+          "tools": [
+            "rework_api"
+          ],
+          "next": "Approver"
+        },
+        {
+          "id": "Approver",
+          "type": "agent",
+          "system_prompt": "Approve final product quality and release.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Inspector",
+          "to": "Analyst"
+        },
+        {
+          "from": "Analyst",
+          "to": "ReworkAgent"
+        },
+        {
+          "from": "ReworkAgent",
+          "to": "Approver"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  }
+]

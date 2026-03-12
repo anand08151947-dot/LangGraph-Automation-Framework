@@ -1,16 +1,48 @@
 {
-  "graph_name": "e2e_workflow",
-  "agents": [
-    {
-      "name": "a1",
-      "system_prompt": "first",
-      "next": "a2"
+  "use_case": "Simple Two-Agent Linear Workflow",
+  "description": "A minimal two-step linear workflow demonstrating the basic agent handoff pattern. Agent 1 processes the input, Agent 2 produces the final output. Good starting point for building more complex workflows.",
+  "sample_prompt": "Create a simple two-agent workflow where the first agent processes input and the second agent produces the final output.",
+  "template_json": {
+    "graph_name": "e2e_workflow",
+    "version": "1.0",
+    "runtime": {
+      "max_iterations": 5,
+      "checkpoint_store": "sqlite",
+      "observability": { "tracing": true, "provider": "logging" }
     },
-    {
-      "name": "a2",
-      "system_prompt": "second",
-      "next": "END"
+    "memory": {
+      "short_term": { "type": "graph_state" },
+      "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "e2e_memory" }
+    },
+    "state_schema": {
+      "input": "string",
+      "intermediate": "string",
+      "output": "string"
+    },
+    "nodes": [
+      {
+        "id": "a1",
+        "type": "agent",
+        "system_prompt": "Process the input and produce an intermediate result. Store it in the 'intermediate' state variable.",
+        "next": "a2"
+      },
+      {
+        "id": "a2",
+        "type": "agent",
+        "system_prompt": "Take the intermediate result and produce the final output. Store it in the 'output' state variable.",
+        "next": "END"
+      }
+    ],
+    "edges": [
+      { "from": "a1", "to": "a2" },
+      { "from": "a2", "to": "END" }
+    ],
+    "retry_policy": { "max_retries": 1, "increment_state": "input" },
+    "checkpointing": { "enabled": false, "nodes": [] },
+    "observability_hooks": {
+      "trace_nodes": true,
+      "log_state_transitions": true,
+      "capture_agent_outputs": true
     }
-  ],
-  "description": "E2E test template"
+  }
 }

@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Card, Button } from '../components/Shared';
-import { translateEnglishToJSON, refineWorkflowJSON } from '../services/geminiService';
+import { englishToJson, customizeJsonLLM } from '../services/api';
 
 const TranslationView: React.FC = () => {
   const [instruction, setInstruction] = useState('');
@@ -13,17 +13,27 @@ const TranslationView: React.FC = () => {
   const handleTranslate = async () => {
     if (!instruction.trim()) return;
     setIsTranslating(true);
-    const result = await translateEnglishToJSON(instruction);
-    setGeneratedJson(result);
+    try {
+      const result = await englishToJson(instruction);
+      setGeneratedJson(JSON.stringify(result.config_json ?? result, null, 2));
+    } catch (e) {
+      setGeneratedJson(JSON.stringify({ error: 'Translation failed. Is LM Studio running?' }, null, 2));
+    }
     setIsTranslating(false);
   };
 
   const handleRefine = async () => {
     if (!refinement.trim()) return;
     setIsRefining(true);
-    const result = await refineWorkflowJSON(generatedJson, refinement);
-    setGeneratedJson(result);
-    setRefinement('');
+    try {
+      let base: any = {};
+      try { base = JSON.parse(generatedJson); } catch { base = {}; }
+      const result = await customizeJsonLLM(base, refinement);
+      setGeneratedJson(JSON.stringify(result.customized_json ?? result, null, 2));
+      setRefinement('');
+    } catch (e) {
+      setGeneratedJson(JSON.stringify({ error: 'Refinement failed. Is LM Studio running?' }, null, 2));
+    }
     setIsRefining(false);
   };
 

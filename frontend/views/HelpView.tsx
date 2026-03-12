@@ -1,14 +1,50 @@
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card } from '../components/Shared';
+import { getSystemHealth } from '../services/api';
 
 const HelpView: React.FC = () => {
+  const [health, setHealth] = useState<any>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getSystemHealth()
+      .then(setHealth)
+      .catch((e: any) => setHealthError(e?.message || 'Unable to reach backend'));
+  }, []);
+
+  const isHealthy = health && (health.status === 'ok' || health.status === 'healthy');
+
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in duration-500">
       <div className="space-y-2">
         <h1 className="text-3xl font-bold text-slate-800">Documentation & Resources</h1>
         <p className="text-slate-500">Master the Agentic AI Workbench with our guides and examples.</p>
       </div>
+
+      {/* System Status */}
+      <Card title="System Status">
+        {healthError ? (
+          <div className="flex items-center gap-3 p-3 bg-rose-50 border border-rose-200 rounded-xl">
+            <div className="w-3 h-3 rounded-full bg-rose-500"></div>
+            <p className="text-sm font-medium text-rose-700">Backend unreachable: {healthError}</p>
+          </div>
+        ) : health ? (
+          <div className="flex items-center gap-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+            <div className="w-3 h-3 rounded-full bg-emerald-500"></div>
+            <div>
+              <p className="text-sm font-bold text-emerald-700">System {isHealthy ? 'Healthy' : 'Degraded'}</p>
+              {health.version && <p className="text-xs text-slate-500">Version: {health.version}</p>}
+              {health.status && <p className="text-xs text-slate-500">Status: {health.status}</p>}
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
+            <div className="w-3 h-3 rounded-full bg-slate-300 animate-pulse"></div>
+            <p className="text-sm text-slate-500">Checking backend health...</p>
+          </div>
+        )}
+      </Card>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card title="Getting Started" className="hover:border-indigo-300 transition-colors">

@@ -1,13 +1,82 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, Button } from '../components/Shared';
+import { getConfig, updateLmStudioConfig } from '../services/api';
 
 const SettingsView: React.FC = () => {
+  const [lmStudioUrl, setLmStudioUrl] = useState('http://localhost:1234/v1/completions');
+  const [lmStudioModel, setLmStudioModel] = useState('local-model');
+  const [saveMsg, setSaveMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getConfig()
+      .then((cfg: any) => {
+        if (cfg?.lm_studio?.url) setLmStudioUrl(cfg.lm_studio.url);
+        if (cfg?.lm_studio?.model) setLmStudioModel(cfg.lm_studio.model);
+      })
+      .catch(() => {/* use defaults */});
+  }, []);
+
+  const handleSaveLmStudio = async () => {
+    setSaving(true); setSaveMsg(null);
+    try {
+      await updateLmStudioConfig(lmStudioUrl, lmStudioModel);
+      setSaveMsg({ type: 'success', text: 'LM Studio config saved successfully.' });
+    } catch (e: any) {
+      setSaveMsg({ type: 'error', text: e?.message || 'Failed to save config.' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in duration-500">
       <div className="space-y-6">
         <h2 className="text-xl font-bold text-slate-800">Workspace Settings</h2>
-        
+
+        <Card title="LM Studio (Local LLM)">
+          <div className="space-y-6">
+            <div className="flex items-center gap-3 p-3 border border-indigo-100 bg-indigo-50 rounded-xl">
+              <div className="w-10 h-10 rounded-lg bg-indigo-600 flex items-center justify-center text-white flex-shrink-0">
+                <i className="fas fa-robot"></i>
+              </div>
+              <div>
+                <p className="font-bold text-slate-800 text-sm">LM Studio</p>
+                <p className="text-xs text-indigo-600">Active LLM provider — runs locally on your machine</p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-slate-700">Server URL</label>
+              <input
+                type="text"
+                className="w-full pl-4 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                value={lmStudioUrl}
+                onChange={(e) => setLmStudioUrl(e.target.value)}
+                placeholder="http://localhost:1234/v1/completions"
+              />
+              <p className="text-xs text-slate-400">LM Studio completions endpoint (default port 1234).</p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-slate-700">Model Name</label>
+              <input
+                type="text"
+                className="w-full pl-4 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                value={lmStudioModel}
+                onChange={(e) => setLmStudioModel(e.target.value)}
+                placeholder="local-model"
+              />
+              <p className="text-xs text-slate-400">Must match the model identifier shown in LM Studio.</p>
+            </div>
+            {saveMsg && (
+              <p className={`text-sm font-medium ${saveMsg.type === 'success' ? 'text-emerald-600' : 'text-rose-500'}`}>{saveMsg.text}</p>
+            )}
+            <Button onClick={handleSaveLmStudio} isLoading={saving} className="w-fit">
+              Save LM Studio Config
+            </Button>
+          </div>
+        </Card>
+
         <Card title="API Keys">
           <div className="space-y-6">
             <div className="space-y-2">

@@ -1,25 +1,42 @@
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, Button, Badge } from '../components/Shared';
-import { MOCK_RUNS } from '../constants';
+import { WorkflowRun, WorkflowStatus } from '../types';
+import { getWorkflowRuns } from '../services/api.runs';
+import branding from '../branding';
 
 const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNavigate }) => {
+  const [runs, setRuns] = useState<WorkflowRun[]>([]);
+
+  useEffect(() => {
+    getWorkflowRuns().then(setRuns).catch(() => setRuns([]));
+  }, []);
+
+  const totalRuns = runs.length;
+  const completed = runs.filter(r => r.status === WorkflowStatus.COMPLETED).length;
+  const running = runs.filter(r => r.status === WorkflowStatus.RUNNING).length;
+  const failed = runs.filter(r => r.status === WorkflowStatus.FAILED).length;
+  const successRate = totalRuns > 0 ? ((completed / totalRuns) * 100).toFixed(1) : '0';
+
   const stats = [
-    { label: 'Active Workflows', value: '12', icon: 'fa-project-diagram', color: 'text-indigo-600' },
-    { label: 'Avg. Completion', value: '2.4m', icon: 'fa-clock', color: 'text-emerald-600' },
-    { label: 'Success Rate', value: '98.2%', icon: 'fa-check-circle', color: 'text-blue-600' },
-    { label: 'Tokens Used', value: '450k', icon: 'fa-coins', color: 'text-amber-600' },
+    { label: 'Total Runs', value: String(totalRuns), icon: 'fa-project-diagram', color: 'text-indigo-600' },
+    { label: 'Active Runs', value: String(running), icon: 'fa-clock', color: 'text-emerald-600' },
+    { label: 'Success Rate', value: `${successRate}%`, icon: 'fa-check-circle', color: 'text-blue-600' },
+    { label: 'Failed Runs', value: String(failed), icon: 'fa-exclamation-circle', color: 'text-amber-600' },
   ];
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       {/* Welcome Hero */}
-      <div className="bg-indigo-600 rounded-2xl p-8 text-white flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl shadow-indigo-100">
+      <div
+        className="rounded-2xl p-8 text-white flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl"
+        style={{ background: `linear-gradient(135deg, ${branding.colors.accent}, ${branding.colors.accentDark})` }}
+      >
         <div className="space-y-2">
-          <h1 className="text-3xl font-bold">Welcome back, John!</h1>
-          <p className="text-indigo-100 max-w-md">Ready to deploy your next intelligent agent? Use our visual builder or let AI generate your JSON workflow config.</p>
+          <h1 className="text-3xl font-bold">{branding.heroWelcome(branding.user.name)}</h1>
+          <p className="max-w-md" style={{ color: branding.colors.heroText }}>{branding.heroSubtitle}</p>
           <div className="pt-4">
-            <Button variant="secondary" onClick={() => onNavigate('/builder')} className="!text-indigo-600 !border-none">
+            <Button variant="secondary" onClick={() => onNavigate('/builder')} className="!border-none font-semibold" style={{ color: branding.colors.accentDark } as any}>
               <i className="fas fa-plus mr-2"></i> Create New Workflow
             </Button>
           </div>
@@ -63,7 +80,7 @@ const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNav
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {MOCK_RUNS.map((run) => (
+                {runs.map((run) => (
                   <tr key={run.id} className="group hover:bg-slate-50 transition-colors">
                     <td className="py-4">
                       <div className="flex items-center gap-3">

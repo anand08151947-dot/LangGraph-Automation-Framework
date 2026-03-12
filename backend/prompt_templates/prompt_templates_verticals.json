@@ -1,0 +1,486 @@
+[
+  {
+    "use_case": "Media Production Workflow",
+    "description": "Automated workflow for video production: scripting, filming, editing, and publishing.",
+    "sample_prompt": "Create a workflow where a ScriptWriter drafts the script, a FilmingAgent records footage, an Editor edits the video, and a Publisher releases the final product.",
+    "template_json": {
+      "graph_name": "Media_Production_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "ScriptWriter",
+          "type": "agent",
+          "system_prompt": "Draft video script based on requirements.",
+          "tools": [
+            "script_tool"
+          ],
+          "next": "FilmingAgent"
+        },
+        {
+          "id": "FilmingAgent",
+          "type": "agent",
+          "system_prompt": "Record video footage as per script.",
+          "tools": [
+            "camera_api"
+          ],
+          "next": "Editor"
+        },
+        {
+          "id": "Editor",
+          "type": "agent",
+          "system_prompt": "Edit and finalize video content.",
+          "tools": [
+            "editing_tool"
+          ],
+          "next": "Publisher"
+        },
+        {
+          "id": "Publisher",
+          "type": "agent",
+          "system_prompt": "Publish the final video to media platforms.",
+          "tools": [
+            "media_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "ScriptWriter",
+          "to": "FilmingAgent"
+        },
+        {
+          "from": "FilmingAgent",
+          "to": "Editor"
+        },
+        {
+          "from": "Editor",
+          "to": "Publisher"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Government Permit Approval",
+    "description": "Multi-agent workflow for government permit application, review, inspection, and approval.",
+    "sample_prompt": "Create a workflow where an Applicant submits a permit request, a Reviewer checks documents, an Inspector performs site inspection, and an Approver grants the permit.",
+    "template_json": {
+      "graph_name": "Permit_Approval_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Applicant",
+          "type": "agent",
+          "system_prompt": "Submit permit application and documents.",
+          "tools": [
+            "permit_api"
+          ],
+          "next": "Reviewer"
+        },
+        {
+          "id": "Reviewer",
+          "type": "agent",
+          "system_prompt": "Review application and documents for completeness.",
+          "tools": [
+            "review_tool"
+          ],
+          "next": "Inspector"
+        },
+        {
+          "id": "Inspector",
+          "type": "agent",
+          "system_prompt": "Conduct site inspection and report findings.",
+          "tools": [
+            "inspection_api"
+          ],
+          "next": "Approver"
+        },
+        {
+          "id": "Approver",
+          "type": "agent",
+          "system_prompt": "Grant or deny permit based on review and inspection.",
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Applicant",
+          "to": "Reviewer"
+        },
+        {
+          "from": "Reviewer",
+          "to": "Inspector"
+        },
+        {
+          "from": "Inspector",
+          "to": "Approver"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Telecom Service Provisioning",
+    "description": "Automated workflow for telecom service request, validation, provisioning, and activation.",
+    "sample_prompt": "Create a workflow where a RequestAgent receives service requests, a Validator checks eligibility, a Provisioner sets up the service, and an Activator enables the service for the customer.",
+    "template_json": {
+      "graph_name": "Telecom_Provisioning_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "RequestAgent",
+          "type": "agent",
+          "system_prompt": "Receive telecom service request from customer.",
+          "tools": [
+            "request_api"
+          ],
+          "next": "Validator"
+        },
+        {
+          "id": "Validator",
+          "type": "agent",
+          "system_prompt": "Validate customer eligibility and requirements.",
+          "tools": [
+            "validation_tool"
+          ],
+          "next": "Provisioner"
+        },
+        {
+          "id": "Provisioner",
+          "type": "agent",
+          "system_prompt": "Provision requested telecom service.",
+          "tools": [
+            "provisioning_api"
+          ],
+          "next": "Activator"
+        },
+        {
+          "id": "Activator",
+          "type": "agent",
+          "system_prompt": "Activate service for customer and confirm setup.",
+          "tools": [
+            "activation_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "RequestAgent",
+          "to": "Validator"
+        },
+        {
+          "from": "Validator",
+          "to": "Provisioner"
+        },
+        {
+          "from": "Provisioner",
+          "to": "Activator"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Transportation Fleet Management",
+    "description": "Multi-agent workflow for fleet scheduling, maintenance, dispatch, and reporting.",
+    "sample_prompt": "Create a workflow where a Scheduler plans fleet routes, a MaintenanceAgent schedules vehicle maintenance, a Dispatcher sends vehicles, and a Reporter logs trip outcomes.",
+    "template_json": {
+      "graph_name": "Fleet_Management_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Scheduler",
+          "type": "agent",
+          "system_prompt": "Plan and schedule fleet routes and assignments.",
+          "tools": [
+            "scheduling_api"
+          ],
+          "next": "MaintenanceAgent"
+        },
+        {
+          "id": "MaintenanceAgent",
+          "type": "agent",
+          "system_prompt": "Schedule and perform vehicle maintenance.",
+          "tools": [
+            "maintenance_api"
+          ],
+          "next": "Dispatcher"
+        },
+        {
+          "id": "Dispatcher",
+          "type": "agent",
+          "system_prompt": "Dispatch vehicles for scheduled trips.",
+          "tools": [
+            "dispatch_api"
+          ],
+          "next": "Reporter"
+        },
+        {
+          "id": "Reporter",
+          "type": "agent",
+          "system_prompt": "Log trip outcomes and update records.",
+          "tools": [
+            "reporting_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Scheduler",
+          "to": "MaintenanceAgent"
+        },
+        {
+          "from": "MaintenanceAgent",
+          "to": "Dispatcher"
+        },
+        {
+          "from": "Dispatcher",
+          "to": "Reporter"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  },
+  {
+    "use_case": "Banking Loan Approval",
+    "description": "Automated workflow for loan application, credit check, approval, and disbursement in banking.",
+    "sample_prompt": "Create a workflow where an Applicant submits a loan request, a CreditChecker reviews credit, an Approver authorizes the loan, and a Disburser releases funds.",
+    "template_json": {
+      "graph_name": "Loan_Approval_Flow",
+      "version": "1.0",
+      "runtime": {
+        "max_iterations": 10,
+        "checkpoint_store": "sqlite",
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+      "memory": {
+        "short_term": {
+          "type": "graph_state"
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "workflow_memory"
+        }
+      },
+      "state_schema": {
+        "input": "string",
+        "output": "string",
+        "status": "string",
+        "retry_count": "integer"
+      },
+      "nodes": [
+        {
+          "id": "Applicant",
+          "type": "agent",
+          "system_prompt": "Submit loan application and documents.",
+          "tools": [
+            "loan_api"
+          ],
+          "next": "CreditChecker"
+        },
+        {
+          "id": "CreditChecker",
+          "type": "agent",
+          "system_prompt": "Review applicant's credit history and eligibility.",
+          "tools": [
+            "credit_api"
+          ],
+          "next": "Approver"
+        },
+        {
+          "id": "Approver",
+          "type": "agent",
+          "system_prompt": "Authorize loan if approved.",
+          "next": "Disburser"
+        },
+        {
+          "id": "Disburser",
+          "type": "agent",
+          "system_prompt": "Disburse loan funds to applicant.",
+          "tools": [
+            "disbursement_api"
+          ],
+          "next": "END"
+        }
+      ],
+      "edges": [
+        {
+          "from": "Applicant",
+          "to": "CreditChecker"
+        },
+        {
+          "from": "CreditChecker",
+          "to": "Approver"
+        },
+        {
+          "from": "Approver",
+          "to": "Disburser"
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 2,
+        "increment_state": "retry_count"
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": []
+      },
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  }
+]

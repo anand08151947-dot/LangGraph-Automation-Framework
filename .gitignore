@@ -1,39 +1,86 @@
-# Python cache
+# ======================
+# Python
+# ======================
 __pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .venv/
+venv/
+env/
 
-# Artifacts and results
+# ======================
+# Backend runtime artifacts
+# ======================
 backend/artifacts/
-ltm.db
 backend/ltm.db
-
-# Node modules and frontend build
-frontend/node_modules/
-frontend/.env.local
-frontend/package-lock.json
-
-# Local environment and secrets
-.env
-.env.*
-
-# OS files
-.DS_Store
-
-# Ignore database and zip artifacts
+ltm.db
 *.db
 *.zip
+bundle.zip
 
-# Ignore temporary files
+# ======================
+# Secrets & environment
+# ======================
+.env
+.env.*
+!.env.example
+*.local
+
+# ======================
+# Node / Frontend
+# ======================
+frontend/node_modules/
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.env.local
+
+# Build output
+dist/
+dist-ssr/
+
+# Lock files (optional: keep package-lock if you want reproducible installs)
+# frontend/package-lock.json
+
+# ======================
+# Logs
+# ======================
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
 
-# Ignore test cache
-backend/langgraph/__pycache__/
-tests/__pycache__/
-
-# Ignore editor files
+# ======================
+# Editor & OS files
+# ======================
+.DS_Store
+Thumbs.db
 *.swp
 *.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+.idea/
+.vscode/*
+!.vscode/extensions.json
 
-# Ignore other unwanted files
-# (add more patterns as needed)
+# ======================
+# Test & coverage
+# ======================
+.coverage
+htmlcov/
+coverage.xml

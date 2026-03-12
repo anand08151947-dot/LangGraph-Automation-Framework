@@ -1,19 +1,49 @@
 {
-  "graph_name": "simple_workflow",
-  "agents": [
-    {
-      "name": "agent_1",
-      "system_prompt": "Agent 1 does initial step",
-      "tools": [],
-      "mcp_bindings": [],
-      "next": "agent_2"
+  "use_case": "simple_workflow",
+  "description": "A basic two-agent sequential workflow for getting started.",
+  "sample_prompt": "Create a simple linear workflow with two agents that execute in sequence.",
+  "template_json": {
+    "graph_name": "simple_workflow",
+    "version": "1.0",
+    "runtime": {
+      "max_iterations": 5,
+      "checkpoint_store": "sqlite",
+      "observability": { "tracing": true, "provider": "logging" }
     },
-    {
-      "name": "agent_2",
-      "system_prompt": "Agent 2 follows up and ends",
-      "tools": [],
-      "mcp_bindings": [],
-      "next": "END"
+    "memory": {
+      "short_term": { "type": "graph_state" },
+      "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "workflow_memory" }
+    },
+    "state_schema": {
+      "input": "string",
+      "output": "string",
+      "status": "string",
+      "retry_count": "integer"
+    },
+    "nodes": [
+      {
+        "id": "agent_1",
+        "type": "agent",
+        "system_prompt": "Agent 1 does initial step",
+        "next": "agent_2"
+      },
+      {
+        "id": "agent_2",
+        "type": "agent",
+        "system_prompt": "Agent 2 follows up and ends",
+        "next": "END"
+      }
+    ],
+    "edges": [
+      { "from": "agent_1", "to": "agent_2" },
+      { "from": "agent_2", "to": "END" }
+    ],
+    "retry_policy": { "max_retries": 2, "increment_state": "retry_count" },
+    "checkpointing": { "enabled": false, "nodes": [] },
+    "observability_hooks": {
+      "trace_nodes": true,
+      "log_state_transitions": true,
+      "capture_agent_outputs": true
     }
-  ]
+  }
 }

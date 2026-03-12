@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { getWorkflowRuns, getWorkflowRun } from '../api.runs';
+import { getWorkflowRuns, getWorkflowRun } from '../services/api.runs';
 import { WorkflowRun } from '../types';
 
 export function useMonitorRuns() {
