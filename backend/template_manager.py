@@ -14,7 +14,7 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, ValidationError
 
 TEMPLATE_DIR = "prompt_templates"
-SCHEMA_PATH = "langgraph_workflow.schema.json"
+SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schemas", "langgraph_workflow.schema.json")
 
 class TemplateVersion(BaseModel):
     name: str

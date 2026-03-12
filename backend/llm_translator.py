@@ -16,10 +16,12 @@ from typing import Dict, Any, Optional
 import openai
 import requests
 
-SCHEMA_PATH = "langgraph_workflow.schema.json"
+SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schemas", "langgraph_workflow.schema.json")
 
-# LM Studio defaults (can be overridden via config or env vars)
-LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://localhost:1234/v1/completions")
+# LM Studio defaults — chat completions endpoint preferred for modern models
+LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234")
+LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", f"{LM_STUDIO_BASE_URL}/v1/completions")
+LM_STUDIO_CHAT_URL = os.getenv("LM_STUDIO_CHAT_URL", f"{LM_STUDIO_BASE_URL}/v1/chat/completions")
 LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "local-model")
 
 class LLMTranslator:
@@ -30,7 +32,14 @@ class LLMTranslator:
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
         openai.api_key = self.openai_api_key
         self.mode = mode.lower()
-        self.lm_studio_url = lm_studio_url or os.getenv("LM_STUDIO_URL", LM_STUDIO_URL)
+        # Derive base URL so we can build both endpoints from one config value
+        base = (lm_studio_url or os.getenv("LM_STUDIO_BASE_URL", LM_STUDIO_BASE_URL)).rstrip("/")
+        if "/v1/" in base:
+            # Legacy: caller passed full completions URL — strip to base
+            base = base.split("/v1/")[0]
+        self.lm_studio_base_url = base
+        self.lm_studio_url = f"{base}/v1/completions"
+        self.lm_studio_chat_url = f"{base}/v1/chat/completions"
         self.lm_studio_model = lm_studio_model or os.getenv("LM_STUDIO_MODEL", LM_STUDIO_MODEL)
 
     def _load_schema(self, path: str) -> Dict[str, Any]:
@@ -40,40 +49,93 @@ class LLMTranslator:
             return json.load(f)
 
     def _call_lm_studio(self, prompt: str, temperature: float = 0.2) -> str:
-        """Send a prompt to LM Studio local server and return the text response."""
+        """Send a prompt to LM Studio. Tries chat/completions endpoint first (preferred for modern models),
+        falls back to legacy completions if chat returns an error."""
+        return self._call_lm_studio_chat(prompt, temperature)
+
+    def _call_lm_studio_chat(self, prompt: str, temperature: float = 0.2) -> str:
+        """Use /v1/chat/completions — preferred format for modern LM Studio models."""
+        payload = {
+            "model": self.lm_studio_model,
+            "messages": [
+                {"role": "system", "content": "You are an expert AI workflow architect. Always respond with valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": temperature,
+            "stream": False,
+            "max_tokens": 4096,
+        }
+        try:
+            response = requests.post(self.lm_studio_chat_url, json=payload, timeout=180)
+            response.raise_for_status()
+            data = response.json()
+            text = data["choices"][0]["message"]["content"].strip()
+        except Exception:
+            # Fall back to legacy completions endpoint
+            text = self._call_lm_studio_completions(prompt, temperature)
+        return self._strip_code_fences(text)
+
+    def _call_lm_studio_completions(self, prompt: str, temperature: float = 0.2) -> str:
+        """Legacy /v1/completions endpoint — fallback for older LM Studio versions."""
         payload = {
             "model": self.lm_studio_model,
             "prompt": prompt,
             "temperature": temperature,
             "stream": False,
-            "max_tokens": 2048,
+            "max_tokens": 4096,
         }
-        response = requests.post(self.lm_studio_url, json=payload, timeout=120)
+        response = requests.post(self.lm_studio_url, json=payload, timeout=180)
         response.raise_for_status()
         data = response.json()
         text = data["choices"][0]["text"].strip()
-        # Strip markdown code fences if the model wraps output in ```json ... ```
+        return self._strip_code_fences(text)
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """Remove markdown ```json ... ``` fences that models sometimes wrap output in."""
         if text.startswith("```"):
             lines = text.splitlines()
-            # Remove opening fence (```json or ```)
             lines = lines[1:] if lines[0].startswith("```") else lines
-            # Remove closing fence
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
             text = "\n".join(lines).strip()
         return text
 
     def _build_prompt(self, instructions: str, base_json: Optional[Dict[str, Any]] = None, customization: bool = False) -> str:
+        # Compact schema — avoids token bloat while keeping field names visible
+        schema_str = json.dumps(self.schema, separators=(',', ':'))
+        few_shot = (
+            '{"graph_name":"ResearchWorkflow","version":"1.0","nodes":[{'
+            '"id":"Planner","type":"agent","system_prompt":"Plan the task","next":"Researcher"},'
+            '{"id":"Researcher","type":"agent","tools":["web_search"],'
+            '"pre_llm":{"rag":{"enabled":true,"provider":"ltm","query_template":"{state.task}","top_k":5}},'
+            '"llm_config":{"temperature":0.3,"max_tokens":1024},'
+            '"context":{"sources":[{"type":"stm","keys":["task"]},{"type":"pre_llm","result_id":"rag_results"}],'
+            '"synthesis":{"strategy":"concatenate"}},'
+            '"guardrails":{"pii":{"enabled":true,"action":"redact"}},'
+            '"output_schema":{"format":"json","state_key":"research_result"},"next":"END"}],'
+            '"edges":[{"from":"Planner","to":"Researcher"}],'
+            '"state_schema":{"task":{"type":"string","description":"The user task","default_value":""},'
+            '"research_result":{"type":"string","default_value":""}}}'
+        )
         if customization and base_json is not None:
             prompt = (
-                "You are an expert AI workflow architect. Given the following base JSON config and customization instructions, "
-                "output a valid JSON config that matches this schema:\n"
-                f"{json.dumps(self.schema, indent=2)}\nBase JSON: {json.dumps(base_json, indent=2)}\nCustomization Instructions: {instructions}\nResponse: (JSON only, no explanation)"
+                "You are an expert AI workflow architect specialising in LangGraph enterprise workflows.\n"
+                "Given the base JSON config and the customization instructions below, output ONLY a valid JSON "
+                "config conforming to this schema (no explanation, no markdown fences):\n"
+                f"SCHEMA: {schema_str}\n"
+                f"BASE JSON: {json.dumps(base_json, separators=(',', ':'))}\n"
+                f"CUSTOMIZATION: {instructions}\n"
+                "OUTPUT (JSON only):"
             )
         else:
             prompt = (
-                "You are an expert AI workflow architect. Given the following instructions, output a valid JSON config that matches this schema:\n"
-                f"{json.dumps(self.schema, indent=2)}\nInstructions: {instructions}\nResponse: (JSON only, no explanation)"
+                "You are an expert AI workflow architect specialising in LangGraph enterprise workflows.\n"
+                "Output ONLY a valid JSON config (no explanation, no markdown fences) conforming to this schema.\n"
+                f"SCHEMA: {schema_str}\n"
+                f"EXAMPLE OUTPUT: {few_shot}\n"
+                f"INSTRUCTIONS: {instructions}\n"
+                "OUTPUT (JSON only):"
             )
         return prompt
 

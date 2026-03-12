@@ -1,52 +1,358 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "LangGraph Agentic Workflow Configuration",
+  "title": "LangGraph Enterprise Workflow Configuration",
+  "description": "Schema for the enterprise agentic workflow builder. All fields are optional unless marked required.",
   "type": "object",
+  "required": ["graph_name", "nodes"],
   "properties": {
-    "graph_name": { "type": "string" },
+    "graph_name": { "type": "string", "description": "Unique identifier for this workflow." },
+    "version":    { "type": "string", "description": "Semantic version string, e.g. '1.0'." },
+    "author":     { "type": "string", "description": "Creator of this workflow." },
+    "tags":       { "type": "array", "items": { "type": "string" }, "description": "Categorisation tags." },
+
+    "runtime": {
+      "type": "object",
+      "description": "Execution runtime settings.",
+      "properties": {
+        "max_iterations":    { "type": "integer", "default": 20 },
+        "timeout_seconds":   { "type": "integer", "description": "Hard wall-clock timeout for the whole run." },
+        "checkpoint_store":  { "type": "string", "enum": ["sqlite", "postgres", "memory"], "default": "sqlite" },
+        "error_policy":      { "type": "string", "enum": ["fail_fast", "continue", "retry"], "default": "fail_fast" },
+        "max_concurrency":   { "type": "integer", "description": "Max parallel node threads.", "default": 1 },
+        "observability": {
+          "type": "object",
+          "properties": {
+            "tracing":  { "type": "boolean", "default": false },
+            "provider": { "type": "string", "enum": ["logging", "langsmith", "otel"], "default": "logging" }
+          }
+        }
+      }
+    },
+
+    "memory": {
+      "type": "object",
+      "description": "Short-term and long-term memory configuration.",
+      "properties": {
+        "short_term": {
+          "type": "object",
+          "properties": {
+            "type":        { "type": "string", "enum": ["graph_state", "redis"], "default": "graph_state" },
+            "max_entries": { "type": "integer", "description": "Max STM entries before LRU eviction." },
+            "redis_url":   { "type": "string", "description": "Redis connection URL (when type=redis)." }
+          }
+        },
+        "long_term": {
+          "type": "object",
+          "properties": {
+            "type":         { "type": "string", "enum": ["sqlite", "vector_db", "file"], "default": "sqlite" },
+            "provider":     { "type": "string", "enum": ["sqlite", "chroma", "milvus", "pinecone", "weaviate"], "default": "sqlite" },
+            "collection":   { "type": "string" },
+            "ttl_days":     { "type": "integer", "description": "Days before LTM entries expire." },
+            "index_fields": { "type": "string", "description": "Comma-separated field names to index for fast queries." }
+          }
+        }
+      }
+    },
+
     "mcp_servers": {
       "type": "object",
+      "description": "Named MCP tool servers available to agents.",
       "additionalProperties": {
         "type": "object",
-        "properties": {
-          "type": { "type": "string", "enum": ["stdio", "sse"] },
-          "command": { "type": "string" },
-          "args": {
-            "type": "array",
-            "items": { "type": "string" }
-          },
-          "url": { "type": "string", "format": "uri" }
-        },
         "required": ["type"],
+        "properties": {
+          "type":        { "type": "string", "enum": ["stdio", "sse", "http"] },
+          "command":     { "type": "string" },
+          "args":        { "type": "array", "items": { "type": "string" } },
+          "endpoint":    { "type": "string" },
+          "description": { "type": "string" },
+          "timeout_ms":  { "type": "integer", "default": 30000 },
+          "auth_header": { "type": "string", "description": "e.g. 'Bearer TOKEN'" }
+        }
+      }
+    },
+
+    "state_schema": {
+      "type": "object",
+      "description": "TypedDict-style state variables shared across all nodes.",
+      "additionalProperties": {
         "oneOf": [
-          { "required": ["command", "args"] },
-          { "required": ["url"] }
+          { "type": "string", "enum": ["string", "integer", "float", "boolean", "list", "dict"],
+            "description": "Shorthand type declaration." },
+          {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type":          { "type": "string", "enum": ["string", "integer", "float", "boolean", "list", "dict"] },
+              "description":   { "type": "string" },
+              "default_value": { "type": "string", "description": "String-encoded default, e.g. '0', 'false', '[]'." }
+            }
+          }
         ]
       }
     },
+
+    "nodes": {
+      "type": "array",
+      "description": "Ordered list of nodes in the workflow graph.",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id":            { "type": "string" },
+          "type":          { "type": "string", "enum": ["agent", "tool_node", "conditional", "human_node"] },
+          "system_prompt": { "type": "string" },
+          "description":   { "type": "string" },
+          "checkpoint":    { "type": "boolean" },
+          "next":          { "type": "string", "description": "Default next node id (overridden by routing_logic)." },
+          "tools":         { "type": "array", "items": { "type": "string" } },
+          "memory_access": { "type": "array", "items": { "type": "string", "enum": ["short_term", "long_term"] } },
+
+          "pre_llm": {
+            "type": "object",
+            "description": "Steps that run before the LLM call to gather grounding data.",
+            "properties": {
+              "tool_calls": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["tool"],
+                  "properties": {
+                    "id":                  { "type": "string" },
+                    "tool":                { "type": "string" },
+                    "input_template":      { "type": "string", "description": "Use {state.VAR} to reference state fields." },
+                    "output_var":          { "type": "string" },
+                    "inject_into_context": { "type": "boolean", "default": true }
+                  }
+                }
+              },
+              "rag": {
+                "type": "object",
+                "properties": {
+                  "enabled":             { "type": "boolean" },
+                  "provider":            { "type": "string", "enum": ["ltm", "chroma", "milvus", "pinecone", "weaviate", "local_files"] },
+                  "collection":          { "type": "string" },
+                  "query_template":      { "type": "string" },
+                  "top_k":               { "type": "integer", "default": 5 },
+                  "score_threshold":     { "type": "number", "default": 0.7 },
+                  "output_var":          { "type": "string" },
+                  "inject_into_context": { "type": "boolean", "default": true }
+                }
+              }
+            }
+          },
+
+          "llm_config": {
+            "type": "object",
+            "description": "Per-node LLM parameters. Falls back to global config if omitted.",
+            "properties": {
+              "model":       { "type": ["string", "null"] },
+              "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+              "max_tokens":  { "type": "integer" }
+            }
+          },
+
+          "context": {
+            "type": "object",
+            "description": "Defines where to pull context from and how to assemble it for the LLM.",
+            "properties": {
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["type"],
+                  "properties": {
+                    "type":      { "type": "string", "enum": ["previous_node", "stm", "ltm", "pre_llm"] },
+                    "label":     { "type": "string" },
+                    "node_id":   { "type": "string", "description": "Required when type=previous_node." },
+                    "keys":      { "type": "array", "items": { "type": "string" }, "description": "STM keys to include." },
+                    "query":     { "type": "string", "description": "Keyword for LTM search." },
+                    "limit":     { "type": "integer", "description": "Max LTM results." },
+                    "result_id": { "type": "string", "description": "pre_llm tool_call id to inject." }
+                  }
+                }
+              },
+              "inject_as": { "type": "string", "enum": ["user", "system", "assistant"], "default": "user" },
+              "synthesis": {
+                "type": "object",
+                "description": "How to consolidate multiple context sources into one.",
+                "properties": {
+                  "strategy":        { "type": "string", "enum": ["concatenate", "structured", "summarize"], "default": "concatenate" },
+                  "prompt_template": { "type": "string", "description": "Custom prompt for summarize strategy." }
+                }
+              },
+              "input_guardrails": {
+                "type": "object",
+                "description": "Guardrails applied to assembled context before the LLM call.",
+                "properties": {
+                  "pii":              { "$ref": "#/definitions/guardrail_action" },
+                  "prompt_injection": { "$ref": "#/definitions/guardrail_action" },
+                  "secrets":          { "$ref": "#/definitions/guardrail_action" },
+                  "profanity":        { "$ref": "#/definitions/guardrail_action" },
+                  "data_classification": {
+                    "type": "object",
+                    "properties": {
+                      "enabled":      { "type": "boolean" },
+                      "action":       { "type": "string", "enum": ["block", "redact", "warn"] },
+                      "allowed_levels": { "type": "array", "items": { "type": "string" } }
+                    }
+                  },
+                  "context_length": {
+                    "type": "object",
+                    "properties": {
+                      "enabled":   { "type": "boolean" },
+                      "max_chars": { "type": "integer" },
+                      "on_exceed": { "type": "string", "enum": ["truncate", "summarize", "block"], "default": "truncate" }
+                    }
+                  },
+                  "language_filter": { "$ref": "#/definitions/guardrail_action" },
+                  "encoding_check":  { "$ref": "#/definitions/guardrail_action" }
+                }
+              }
+            }
+          },
+
+          "output_schema": {
+            "type": "object",
+            "description": "Expected format of the LLM output.",
+            "properties": {
+              "format":          { "type": "string", "enum": ["json", "text", "markdown"] },
+              "state_key":       { "type": "string", "description": "State field to write output into." },
+              "required_fields": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+
+          "validation": {
+            "type": "object",
+            "description": "Output validation rules applied after the LLM call.",
+            "properties": {
+              "enabled":    { "type": "boolean" },
+              "rules":      { "type": "array", "items": { "type": "string" } },
+              "on_failure": { "type": "string", "enum": ["warn", "block", "retry"] }
+            }
+          },
+
+          "guardrails": {
+            "type": "object",
+            "description": "Output guardrails — PII, harmful content, safety checks.",
+            "properties": {
+              "pii":              { "$ref": "#/definitions/guardrail_action" },
+              "harmful":          { "$ref": "#/definitions/guardrail_action" },
+              "self_harm":        { "$ref": "#/definitions/guardrail_action" },
+              "hate_speech":      { "$ref": "#/definitions/guardrail_action" },
+              "regulated_advice": { "$ref": "#/definitions/guardrail_action" },
+              "safety_classifier": {
+                "type": "object",
+                "properties": {
+                  "enabled":    { "type": "boolean" },
+                  "action":     { "type": "string", "enum": ["block", "redact", "approve"] },
+                  "categories": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          },
+
+          "routing_logic": {
+            "type": "array",
+            "description": "Conditional routing rules evaluated top-to-bottom.",
+            "items": {
+              "type": "object",
+              "required": ["condition", "next"],
+              "properties": {
+                "condition": {
+                  "type": "string",
+                  "description": "Python-style expression referencing state fields, e.g. 'confidence_score >= 0.7' or 'task == \"research\"'."
+                },
+                "next": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "edges": {
+      "type": "array",
+      "description": "Explicit edges between nodes (supplement routing_logic).",
+      "items": {
+        "type": "object",
+        "required": ["from", "to"],
+        "properties": {
+          "from":      { "type": "string" },
+          "to":        { "type": "string" },
+          "condition": { "type": "string", "description": "Optional condition expression." },
+          "label":     { "type": "string", "description": "Human-readable edge label." }
+        }
+      }
+    },
+
+    "parallel_execution": {
+      "type": "array",
+      "description": "Groups of nodes to execute concurrently.",
+      "items": {
+        "type": "object",
+        "required": ["group", "nodes"],
+        "properties": {
+          "group":      { "type": "string" },
+          "nodes":      { "type": "array", "items": { "type": "string" } },
+          "timeout_ms": { "type": "integer" }
+        }
+      }
+    },
+
+    "retry_policy": {
+      "type": "object",
+      "properties": {
+        "max_retries":       { "type": "integer", "default": 3 },
+        "increment_state":   { "type": "string", "description": "State field to increment on each retry." },
+        "retry_on":          { "type": "array", "items": { "type": "string", "enum": ["node_error", "validation_failure", "guardrail_block", "timeout"] } },
+        "backoff_strategy":  { "type": "string", "enum": ["fixed", "exponential"], "default": "fixed" }
+      }
+    },
+
+    "checkpointing": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "nodes":   { "type": "array", "items": { "type": "string" }, "description": "Node ids where state is checkpointed." }
+      }
+    },
+
+    "observability_hooks": {
+      "type": "object",
+      "properties": {
+        "trace_nodes":             { "type": "boolean" },
+        "log_state_transitions":   { "type": "boolean" },
+        "capture_agent_outputs":   { "type": "boolean" }
+      }
+    },
+
     "agents": {
       "type": "array",
+      "description": "Legacy agent format — use 'nodes' for new workflows.",
       "items": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
+          "name":          { "type": "string" },
           "system_prompt": { "type": "string" },
-          "tools": {
-            "type": "array",
-            "items": { "type": "string" },
-            "default": []
-          },
-          "mcp_bindings": {
-            "type": "array",
-            "items": { "type": "string" },
-            "default": []
-          },
-          "next": { "type": "string" },
-          "metadata": { "type": "object" }
+          "tools":         { "type": "array", "items": { "type": "string" } },
+          "mcp_bindings":  { "type": "array", "items": { "type": "string" } },
+          "next":          { "type": "string" },
+          "metadata":      { "type": "object" }
         },
         "required": ["name", "next"]
       }
     }
   },
-  "required": ["graph_name", "agents"]
+
+  "definitions": {
+    "guardrail_action": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "action":  { "type": "string", "enum": ["block", "redact", "warn", "approve"] }
+      }
+    }
+  }
 }
+

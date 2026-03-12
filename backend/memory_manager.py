@@ -78,6 +78,39 @@ class MemoryManager:
             return [json.loads(r[0]) for r in rows]
         return []
 
+    def query_ltm(self, session_id: str, keyword: str = "", limit: int = 10) -> List[str]:
+        """Full-text keyword search over LTM entries. Returns matching step_context strings."""
+        if self.ltm_backend == 'sqlite':
+            conn = sqlite3.connect(self.ltm_path)
+            c = conn.cursor()
+            if keyword:
+                c.execute(
+                    'SELECT step_context FROM ltm WHERE session_id=? AND step_context LIKE ? ORDER BY step_idx DESC LIMIT ?',
+                    (session_id, f"%{keyword}%", limit)
+                )
+            else:
+                c.execute(
+                    'SELECT step_context FROM ltm WHERE session_id=? ORDER BY step_idx DESC LIMIT ?',
+                    (session_id, limit)
+                )
+            rows = c.fetchall()
+            conn.close()
+            return [r[0] for r in rows]
+        return []
+
+    def get_stats(self, session_id: str) -> Dict[str, Any]:
+        """Return STM/LTM stats for a session (useful for Monitor view)."""
+        stm_state = self.load_stm(session_id)
+        stm_keys = list(stm_state.keys()) if stm_state else []
+        ltm_count = 0
+        if self.ltm_backend == 'sqlite':
+            conn = sqlite3.connect(self.ltm_path)
+            c = conn.cursor()
+            c.execute('SELECT COUNT(*) FROM ltm WHERE session_id=?', (session_id,))
+            ltm_count = c.fetchone()[0]
+            conn.close()
+        return {"session_id": session_id, "stm_keys": stm_keys, "ltm_entry_count": ltm_count}
+
     def reset_ltm(self, session_id: str):
         if self.ltm_backend == 'sqlite':
             conn = sqlite3.connect(self.ltm_path)
