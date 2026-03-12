@@ -145,4 +145,14 @@ export const getSystemReadiness = async (): Promise<any> => {
   return res.data;
 };
 
+export const testLlmConnection = async (params: Record<string, string>): Promise<{ ok: boolean; latency_ms: number; error?: string }> => {
+  const res = await api.post('/llm/test', params);
+  return res.data;
+};
+
+export const updateLlmConfig = async (config: Record<string, string>): Promise<any> => {
+  const res = await api.put('/config/llm', config);
+  return res.data;
+};
+
 export default api;

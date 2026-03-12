@@ -11,6 +11,8 @@ Features:
 - Return final state as a JSON-serializable dict
 """
 
+import threading
+import time
 from typing import Any, Dict, Optional
 
 from graph_factory import GraphFactory, _make_default_state
@@ -51,17 +53,39 @@ class Orchestrator:
         Returns:
             The final merged state dict (JSON-serializable).
         """
-        # ── Build graph ────────────────────────────────────────────────
-        graph = self.factory.build_from_config(config_json)
+        # ── ORC-1: Config-driven managers ─────────────────────────────
+        memory_cfg = config_json.get("memory", {})
+        obs_hooks = config_json.get("observability_hooks", ["logging"])
+        runtime_cfg = config_json.get("runtime", {})
+
+        # Build per-run MemoryManager from config (fall back to instance default)
+        memory_manager = (
+            MemoryManager(**memory_cfg) if memory_cfg else self.memory_manager
+        )
+        observability = ObservabilityManager(obs_hooks)
+
+        # ── ORC-2: Build graph (pass session_id through) ───────────────
+        graph = self.factory.build_from_config(config_json, session_id=session_id)
+
+        # ── ORC-6: Timeout setup ───────────────────────────────────────
+        timeout_seconds = runtime_cfg.get("timeout_seconds")
+        _timed_out = threading.Event()
+        _timer = (
+            threading.Timer(timeout_seconds, _timed_out.set)
+            if timeout_seconds
+            else None
+        )
+        if _timer:
+            _timer.start()
 
         # ── Build initial state dict ───────────────────────────────────
         state_schema: Dict[str, str] = config_json.get("state_schema", {})
-        max_iterations: int = config_json.get("runtime", {}).get("max_iterations", 20)
+        max_iterations: int = runtime_cfg.get("max_iterations", 20)
 
         # Try to resume from saved STM when a session_id is provided
         current_state: Dict[str, Any] = {}
         if session_id:
-            loaded = self.memory_manager.load_stm(session_id)
+            loaded = memory_manager.load_stm(session_id)
             if loaded and isinstance(loaded, dict):
                 current_state = loaded
 
@@ -76,79 +100,101 @@ class Orchestrator:
         step_idx = 0
         last_state = dict(current_state)
 
-        for step_output in graph.stream(current_state):
-            retry_count = 0
-            while True:
-                try:
-                    # Merge node updates into running state
-                    for node_name, node_updates in step_output.items():
-                        if isinstance(node_updates, dict):
-                            last_state.update(node_updates)
-
-                    sender = last_state.get("sender", "")
-
-                    # Pre-step hooks
-                    self.observability.run_plugin_hooks("pre_step", {
-                        "step_idx": step_idx,
-                        "state": last_state,
-                    })
-
-                    # Log the agent action
-                    self.observability.log_event("agent_action", {
-                        "step_idx": step_idx,
-                        "sender": sender,
-                        "messages": last_state.get("messages", []),
-                        "metadata": last_state.get("metadata", {}),
-                    })
-
-                    # Trace the step (if session tracking is enabled)
-                    if session_id:
-                        self.observability.trace_step(session_id, {
-                            "step_idx": step_idx,
-                            "sender": sender,
-                            "node": sender,
-                            "metadata": last_state.get("metadata", {}),
-                        })
-
-                    # Record step metric
-                    self.observability.record_metric(
-                        "step_executed", 1,
-                        {"step_idx": step_idx, "sender": sender},
+        try:
+            for step_output in graph.stream(current_state):
+                # ORC-6: Check timeout at every step boundary
+                if _timed_out.is_set():
+                    raise TimeoutError(
+                        f"Workflow exceeded timeout of {timeout_seconds}s "
+                        f"after {step_idx} steps."
                     )
 
-                    # Persist STM (latest state) and append LTM entry
-                    if session_id:
-                        self.memory_manager.save_stm(session_id, last_state)
-                        self.memory_manager.append_ltm(session_id, {
+                retry_count = 0
+                while True:
+                    try:
+                        step_start = time.time()  # ORC-3: per-step start time
+
+                        # Merge node updates into running state
+                        for node_name, node_updates in step_output.items():
+                            if isinstance(node_updates, dict):
+                                last_state.update(node_updates)
+
+                        sender = last_state.get("sender", "")
+
+                        # Pre-step hooks
+                        observability.run_plugin_hooks("pre_step", {
                             "step_idx": step_idx,
-                            "messages": last_state.get("messages", []),
+                            "state": last_state,
+                        })
+
+                        # Log the agent action
+                        observability.log_event("agent_action", {
+                            "step_idx": step_idx,
                             "sender": sender,
+                            "messages": last_state.get("messages", []),
                             "metadata": last_state.get("metadata", {}),
                         })
 
-                    # Post-step hooks
-                    self.observability.run_plugin_hooks("post_step", {
-                        "step_idx": step_idx,
-                        "state": last_state,
-                    })
+                        # Trace the step (if session tracking is enabled)
+                        if session_id:
+                            observability.trace_step(session_id, {
+                                "step_idx": step_idx,
+                                "sender": sender,
+                                "node": sender,
+                                "metadata": last_state.get("metadata", {}),
+                            })
 
-                    break  # success – exit retry loop
+                        # Record step metric
+                        observability.record_metric(
+                            "step_executed", 1,
+                            {"step_idx": step_idx, "sender": sender},
+                        )
 
-                except Exception as exc:
-                    self.observability.log_error(exc, context={
-                        "step_idx": step_idx,
-                        "sender": last_state.get("sender"),
-                        "retry": retry_count,
-                    })
-                    retry_count += 1
-                    if retry_count > self.max_retries:
-                        raise  # abort after max retries
+                        # ORC-3: capture end time and compute duration
+                        step_end = time.time()
+                        duration_ms = round((step_end - step_start) * 1000, 3)
 
-            step_idx += 1
+                        # Persist STM (latest state) and append LTM entry
+                        if session_id:
+                            memory_manager.save_stm(session_id, last_state)
+                            memory_manager.append_ltm(session_id, {
+                                "step_idx": step_idx,
+                                "messages": last_state.get("messages", []),
+                                "sender": sender,
+                                "metadata": last_state.get("metadata", {}),
+                                "start_time": step_start,   # ORC-3
+                                "end_time": step_end,        # ORC-3
+                                "duration_ms": duration_ms,  # ORC-3
+                            })
 
-            # Honour max_iterations guard (defensive; graph also enforces it)
-            if step_idx >= max_iterations:
-                break
+                        # Post-step hooks
+                        observability.run_plugin_hooks("post_step", {
+                            "step_idx": step_idx,
+                            "state": last_state,
+                        })
+
+                        break  # success – exit retry loop
+
+                    except Exception as exc:
+                        observability.log_error(exc, context={
+                            "step_idx": step_idx,
+                            "sender": last_state.get("sender"),
+                            "retry": retry_count,
+                        })
+                        retry_count += 1
+                        if retry_count > self.max_retries:
+                            raise  # abort after max retries
+
+                step_idx += 1
+
+                # Honour max_iterations guard (defensive; graph also enforces it)
+                if step_idx >= max_iterations:
+                    break
+
+        finally:
+            # ORC-6: always cancel the timer to avoid resource leaks
+            if _timer:
+                _timer.cancel()
 
         return last_state
 

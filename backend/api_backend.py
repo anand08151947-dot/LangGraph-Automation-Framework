@@ -6,7 +6,7 @@ from db import init_db, upsert_run, get_run, get_all_runs, record_to_dict, \
 init_db()
 seed_templates_from_files()
 
-from fastapi import FastAPI, Body, Request
+from fastapi import FastAPI, Body, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 # FastAPI app instance (must be defined before route decorators)
@@ -716,6 +716,94 @@ def update_lm_studio_config(update: dict = Body(...)):
         return {"status": "updated", "lm_studio": cfg["lm_studio"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update config: {e}")
+# --- LLM Connection Test Endpoint ---
+@app.post("/llm/test")
+def test_llm_connection(req: dict = Body(...)):
+    """Test connectivity to an LLM provider. Returns {ok, latency_ms, error?}."""
+    import time as _t
+    provider = req.get("provider", "lm_studio")
+    start = _t.time()
+    try:
+        if provider == "lm_studio":
+            base_url = req.get("base_url", "http://localhost:1234")
+            model = req.get("model", "local-model")
+            import requests as _req
+            resp = _req.post(f"{base_url}/v1/chat/completions", json={
+                "model": model, "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 5, "stream": False
+            }, timeout=10)
+            resp.raise_for_status()
+        elif provider == "openai":
+            import openai as _openai
+            client = _openai.OpenAI(api_key=req.get("api_key"))
+            client.models.list()
+        elif provider == "gemini":
+            import requests as _req
+            api_key = req.get("api_key")
+            resp = _req.get(f"https://generativelanguage.googleapis.com/v1/models?key={api_key}", timeout=10)
+            resp.raise_for_status()
+        elif provider == "anthropic":
+            import requests as _req
+            resp = _req.get("https://api.anthropic.com/v1/models",
+                headers={"x-api-key": req.get("api_key"), "anthropic-version": "2023-06-01"}, timeout=10)
+            resp.raise_for_status()
+        elif provider == "ollama":
+            import requests as _req
+            url = req.get("url", "http://localhost:11434")
+            resp = _req.get(f"{url}/api/tags", timeout=10)
+            resp.raise_for_status()
+        latency_ms = round((_t.time() - start) * 1000)
+        return {"ok": True, "latency_ms": latency_ms}
+    except Exception as e:
+        return {"ok": False, "latency_ms": round((_t.time() - start) * 1000), "error": str(e)}
+
+# --- LLM Config Update Endpoint ---
+@app.put("/config/llm")
+def update_llm_config(update: dict = Body(...)):
+    """Save LLM provider config to config.json."""
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        provider = update.get("provider", "lm_studio")
+        cfg["llm"] = {"mode": provider}
+        if provider == "lm_studio":
+            base = update.get("base_url", "http://localhost:1234").rstrip("/")
+            cfg["lm_studio"] = {"url": f"{base}/v1/completions", "base_url": base, "model": update.get("model", "local-model")}
+        elif provider == "openai":
+            cfg.setdefault("api_keys", {})["openai"] = update.get("api_key", "")
+            cfg["openai"] = {"model": update.get("model", "gpt-4o")}
+        elif provider == "gemini":
+            cfg.setdefault("api_keys", {})["gemini"] = update.get("api_key", "")
+            cfg["gemini"] = {"model": update.get("model", "gemini-2.0-flash")}
+        elif provider == "anthropic":
+            cfg.setdefault("api_keys", {})["anthropic"] = update.get("api_key", "")
+            cfg["anthropic"] = {"model": update.get("model", "claude-3-5-sonnet-20241022")}
+        elif provider == "ollama":
+            cfg["ollama"] = {"url": update.get("url", "http://localhost:11434"), "model": update.get("model", "llama3")}
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        try:
+            config_mgr.reload()
+        except Exception:
+            pass
+        return {"status": "updated", "provider": provider}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update config: {e}")
+
+# --- Code Generation ---
+@app.post('/generate_code')
+def generate_code_endpoint(req: dict = Body(...)):
+    from code_generator import CodeGenerator
+    gen = CodeGenerator()
+    config = req.get('config_json', {})
+    try:
+        script = gen.generate_workflow_script(config)
+        requirements = gen.generate_requirements(config)
+        env_template = gen.generate_env_template(config)
+        return {'script': script, 'requirements': requirements, 'env_template': env_template}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # --- Main ---
 if __name__ == "__main__":

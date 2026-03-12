@@ -17,12 +17,12 @@ interconnected areas in priority order.
 
 | Priority | ID | Area | Why first |
 |----------|----|------|-----------|
-| 🔴 P0 | MM-1 | `query_ltm()` missing from MemoryManager | Runtime crash — RAG calls missing method |
-| 🔴 P0 | TRANS-1 | Schema out of date | Translator generates incomplete/wrong JSON |
-| 🔴 P0 | TRANS-3 | LM Studio chat completions format | Completions endpoint broken for modern models |
-| 🟠 P1 | ORC-1,2,3 | Orchestrator wiring | Config not flowing through to execution |
-| 🟠 P1 | BNDL-1,2,3 | Code generator + requirements + .env | Core workbench deliverable — shipping working code |
-| 🟠 P1 | SET-1,2,3 | Model selector + connection test | Without this, users can't change LLM |
+| ✅ P0 | MM-1 | `query_ltm()` missing from MemoryManager | **DONE** |
+| ✅ P0 | TRANS-1 | Schema out of date | **DONE** |
+| ✅ P0 | TRANS-3 | LM Studio chat completions format | **DONE** |
+| ✅ P1 | ORC-1,2,3 | Orchestrator wiring | **DONE** |
+| ✅ P1 | BNDL-1,2,3 | Code generator + requirements + .env | **DONE** |
+| ✅ P1 | SET-1,2,3 | Model selector + connection test | **DONE** |
 | 🟡 P2 | RAG-1..6 | RAG provider integrations | Enables real RAG, not just keyword match |
 | 🟡 P2 | ORC-7,8 | Human-in-loop checkpoint | Enterprise template feature |
 | 🟡 P2 | HELP-1..6 | Docs rewrite | Developer experience |
