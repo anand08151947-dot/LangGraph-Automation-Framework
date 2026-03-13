@@ -895,24 +895,38 @@ def get_artifact_code(run_id: str):
     code_path = os.path.join(artifacts_dir, "agent.py")
     if not os.path.exists(code_path):
         raise HTTPException(status_code=404, detail="agent.py not found for this run")
-    with open(code_path, encoding="utf-8") as f:
+    with open(code_path, encoding="utf-8", errors="replace") as f:
         code = f.read()
+
+    def _read(path: str) -> str:
+        try:
+            return open(path, encoding="utf-8", errors="replace").read()
+        except Exception:
+            return ""
+
     # Also return requirements and env
     req_path = os.path.join(artifacts_dir, "requirements.txt")
     env_path = os.path.join(artifacts_dir, ".env.example")
     readme_path = os.path.join(artifacts_dir, "README.md")
+    docker_path = os.path.join(artifacts_dir, "docker-compose.yml")
+    dockerfile_path = os.path.join(artifacts_dir, "Dockerfile")
+    val_path = os.path.join(artifacts_dir, "validation_report.json")
+    val_report = None
+    if os.path.exists(val_path):
+        try:
+            with open(val_path, encoding="utf-8") as vf:
+                val_report = json.load(vf)
+        except Exception:
+            val_report = None
     return {
         "run_id": run_id,
         "agent_py": code,
-        "requirements_txt": open(req_path, encoding="utf-8").read() if os.path.exists(req_path) else "",
-        "env_example": open(env_path, encoding="utf-8").read() if os.path.exists(env_path) else "",
-        "readme": open(readme_path, encoding="utf-8").read() if os.path.exists(readme_path) else "",
-        "docker_compose": open(os.path.join(artifacts_dir, "docker-compose.yml"), encoding="utf-8").read()
-            if os.path.exists(os.path.join(artifacts_dir, "docker-compose.yml")) else "",
-        "dockerfile": open(os.path.join(artifacts_dir, "Dockerfile"), encoding="utf-8").read()
-            if os.path.exists(os.path.join(artifacts_dir, "Dockerfile")) else "",
-        "validation_report": json.load(open(os.path.join(artifacts_dir, "validation_report.json"), encoding="utf-8"))
-            if os.path.exists(os.path.join(artifacts_dir, "validation_report.json")) else None,
+        "requirements_txt": _read(req_path) if os.path.exists(req_path) else "",
+        "env_example": _read(env_path) if os.path.exists(env_path) else "",
+        "readme": _read(readme_path) if os.path.exists(readme_path) else "",
+        "docker_compose": _read(docker_path) if os.path.exists(docker_path) else "",
+        "dockerfile": _read(dockerfile_path) if os.path.exists(dockerfile_path) else "",
+        "validation_report": val_report,
     }
 
 
