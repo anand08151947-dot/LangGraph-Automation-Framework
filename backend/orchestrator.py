@@ -29,6 +29,18 @@ class HumanApprovalRequired(Exception):
         self.state = state
 
 
+def _build_memory_manager(memory_cfg: dict) -> MemoryManager:
+    """Translate workflow template memory config keys → MemoryManager kwargs."""
+    if not memory_cfg:
+        return MemoryManager()
+    stm = memory_cfg.get("short_term", {})
+    ltm = memory_cfg.get("long_term", {})
+    stm_backend = stm.get("backend", "memory") if isinstance(stm, dict) else "memory"
+    ltm_backend = ltm.get("backend", "sqlite") if isinstance(ltm, dict) else "sqlite"
+    ltm_path = ltm.get("path", "ltm.db") if isinstance(ltm, dict) else "ltm.db"
+    return MemoryManager(stm_backend=stm_backend, ltm_backend=ltm_backend, ltm_path=ltm_path)
+
+
 class Orchestrator:
     def __init__(self, max_retries: int = 2):
         # MCP binder may be optionally configured at runtime
@@ -67,9 +79,7 @@ class Orchestrator:
         runtime_cfg = config_json.get("runtime", {})
 
         # Build per-run MemoryManager from config (fall back to instance default)
-        memory_manager = (
-            MemoryManager(**memory_cfg) if memory_cfg else self.memory_manager
-        )
+        memory_manager = _build_memory_manager(memory_cfg) if memory_cfg else self.memory_manager
         observability = ObservabilityManager(obs_hooks)
 
         # ── ORC-2: Build graph (pass session_id through) ───────────────
@@ -239,9 +249,7 @@ class Orchestrator:
         clears the __awaiting_approval__ flag, then re-runs from there.
         """
         memory_cfg = config_json.get("memory", {})
-        memory_manager = (
-            MemoryManager(**memory_cfg) if memory_cfg else self.memory_manager
-        )
+        memory_manager = _build_memory_manager(memory_cfg) if memory_cfg else self.memory_manager
 
         loaded = memory_manager.load_stm(run_id)
         if not loaded or not isinstance(loaded, dict):

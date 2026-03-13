@@ -130,8 +130,18 @@ export const updateLmStudioConfig = async (url: string, model: string): Promise<
   return res.data;
 };
 
-export const getArtifacts = async (): Promise<Artifact[]> => {
-  const res = await api.get<Artifact[]>('/artifacts');
+export const getArtifacts = async (): Promise<any[]> => {
+  const res = await api.get<any[]>('/artifacts');
+  return res.data;
+};
+
+export const getArtifactCode = async (run_id: string): Promise<any> => {
+  const res = await api.get(`/artifacts/${run_id}/code`);
+  return res.data;
+};
+
+export const downloadRunBundle = async (run_id: string): Promise<Blob> => {
+  const res = await api.get(`/download_bundle/${run_id}`, { responseType: 'blob' });
   return res.data;
 };
 
