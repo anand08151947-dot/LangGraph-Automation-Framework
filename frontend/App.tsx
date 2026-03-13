@@ -14,6 +14,7 @@ import { TemplateInfo } from './types';
 const App: React.FC = () => {
   const [currentPath, setCurrentPath] = useState('/');
   const [builderTemplate, setBuilderTemplate] = useState<TemplateInfo | null>(null);
+  const [translationTemplate, setTranslationTemplate] = useState<TemplateInfo | null>(null);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -29,6 +30,11 @@ const App: React.FC = () => {
     if (path === '/builder' && data?.template) {
       setBuilderTemplate(data.template as TemplateInfo);
     }
+    if (path === '/translation' && data?.template) {
+      setTranslationTemplate(data.template as TemplateInfo);
+    } else if (path === '/translation' && !data?.template) {
+      setTranslationTemplate(null);
+    }
     window.location.hash = path;
   };
 
@@ -37,7 +43,7 @@ const App: React.FC = () => {
       case '/': return <DashboardView onNavigate={navigate} />;
       case '/templates': return <TemplatesView onNavigate={navigate} />;
       case '/builder': return <BuilderView key={builderTemplate?.name ?? '__empty__'} initialTemplate={builderTemplate} onNavigate={navigate} />;
-      case '/translation': return <TranslationView />;
+      case '/translation': return <TranslationView key={translationTemplate?.name ?? '__blank__'} initialTemplate={translationTemplate} onNavigate={navigate} />;
       case '/monitor': return <MonitorView />;
       case '/export': return <ExportView />;
       case '/settings': return <SettingsView />;
