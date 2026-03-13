@@ -1,0 +1,557 @@
+[
+  {
+    "use_case": "Document Intelligence Pipeline (Full Enterprise)",
+    "description": "A production-grade enterprise document ingestion, classification, research, verification and human-gated publishing pipeline. Exercises every node-level capability: LLM Config, Pre-LLM Tool Calls, Pre-LLM RAG, Context Sources (previous_node / STM / LTM / pre_llm), multi-source Synthesis, Input Guardrails, Output Schema, Output Validation, Safety Guardrails, Memory Access, and Routing Logic.",
+    "sample_prompt": "Create a document intelligence pipeline with an Intake agent that fetches metadata via a tool call and runs RAG, a Classifier with low temperature and LTM context, a Supervisor with conditional routing, a ResearchAgent that searches the web and RAG, a VerifierAgent with validation rules, a HumanApproval checkpoint, and a ResultWriter that composes the final structured record.",
+    "template_json": {
+      "graph_name": "Document_Intelligence_Pipeline",
+      "version": "1.0",
+      "description": "Enterprise document ingestion, classification, research, verification and human-gated publishing pipeline. Exercises all per-node capabilities.",
+      "author": "LangGraph Workbench",
+      "tags": ["enterprise", "document", "rag", "guardrails", "human-in-loop", "full-example"],
+
+      "runtime": {
+        "max_iterations": 20,
+        "checkpoint_store": "sqlite",
+        "timeout_seconds": 300,
+        "error_policy": "continue",
+        "max_concurrency": 4,
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
+      },
+
+      "memory": {
+        "short_term": {
+          "type": "graph_state",
+          "stmMaxEntries": 50
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "doc_intelligence_ltm",
+          "ltmTtlDays": 30
+        }
+      },
+
+      "mcp_servers": {
+        "web_search": {
+          "type": "http",
+          "endpoint": "http://localhost:7070",
+          "description": "Web search tool for regulatory lookups",
+          "timeout_ms": 10000
+        },
+        "doc_api": {
+          "type": "stdio",
+          "command": "python",
+          "args": ["-m", "mcp_doc_server"],
+          "description": "Document metadata extraction API"
+        }
+      },
+
+      "state_schema": {
+        "document_text": {
+          "type": "string",
+          "description": "Raw input document text",
+          "default_value": ""
+        },
+        "classification": {
+          "type": "string",
+          "description": "Document category: financial, legal, medical, technical, general",
+          "default_value": "unclassified"
+        },
+        "confidence_score": {
+          "type": "float",
+          "description": "Classifier confidence 0.0–1.0",
+          "default_value": "0.0"
+        },
+        "summary": {
+          "type": "string",
+          "description": "Generated document summary",
+          "default_value": ""
+        },
+        "research_notes": {
+          "type": "string",
+          "description": "Research agent findings and regulatory references",
+          "default_value": ""
+        },
+        "pii_detected": {
+          "type": "boolean",
+          "description": "Whether PII was found in the document",
+          "default_value": "false"
+        },
+        "approved": {
+          "type": "boolean",
+          "description": "Human approval status",
+          "default_value": "false"
+        },
+        "retry_count": {
+          "type": "integer",
+          "description": "Number of re-classification retries",
+          "default_value": "0"
+        }
+      },
+
+      "nodes": [
+        {
+          "id": "Intake",
+          "type": "agent",
+          "description": "Document intake and metadata extraction. Runs a tool call to fetch doc metadata and RAG to find similar prior documents before calling the LLM.",
+          "system_prompt": "You are a document intake agent. Extract key metadata from the provided document and prepare it for classification. Return a JSON object with fields: title, doc_type, page_count_estimate, key_topics (array of strings).",
+          "tools": ["doc_api"],
+          "memory_access": ["short_term"],
+          "next": "Classifier",
+
+          "pre_llm": {
+            "tool_calls": [
+              {
+                "id": "fetch_doc_metadata",
+                "tool": "doc_api",
+                "input_template": "fetch_metadata:{state.document_text}",
+                "output_var": "doc_metadata",
+                "inject_into_context": true
+              }
+            ],
+            "rag": {
+              "enabled": true,
+              "provider": "ltm",
+              "collection": "doc_intelligence_ltm",
+              "query_template": "{state.document_text}",
+              "top_k": 3,
+              "score_threshold": 0.5,
+              "output_var": "similar_docs",
+              "inject_into_context": true
+            }
+          },
+
+          "llm_config": {
+            "temperature": 0.2,
+            "max_tokens": 512,
+            "model": null
+          },
+
+          "context": {
+            "sources": [
+              {
+                "type": "stm",
+                "keys": ["document_text"],
+                "label": "Input Document"
+              }
+            ],
+            "inject_as": "user",
+            "synthesis": {
+              "strategy": "structured"
+            },
+            "input_guardrails": {
+              "context_length": {
+                "enabled": true,
+                "max_chars": 8000,
+                "on_exceed": "truncate"
+              },
+              "encoding_sanitization": {
+                "enabled": true
+              }
+            }
+          },
+
+          "output_schema": {
+            "format": "json",
+            "state_key": "summary",
+            "required_fields": ["title", "doc_type", "key_topics"]
+          },
+
+          "validation": {
+            "enabled": true,
+            "required_fields": ["title", "doc_type"],
+            "on_failure": "warn"
+          },
+
+          "guardrails": {
+            "pii": {
+              "enabled": true,
+              "action": "redact"
+            }
+          }
+        },
+
+        {
+          "id": "Classifier",
+          "type": "agent",
+          "description": "Classifies the document using low temperature for deterministic output. Pulls context from the Intake node output and LTM classification examples.",
+          "system_prompt": "You are a document classifier. Classify the document into one of: [financial, legal, medical, technical, general]. Return JSON with fields: classification (string), confidence_score (float 0.0-1.0), reasoning (string).",
+          "tools": [],
+          "memory_access": ["short_term", "long_term"],
+          "next": "Supervisor",
+
+          "llm_config": {
+            "temperature": 0.1,
+            "max_tokens": 256,
+            "model": null
+          },
+
+          "context": {
+            "sources": [
+              {
+                "type": "previous_node",
+                "node_id": "Intake",
+                "label": "Intake Output"
+              },
+              {
+                "type": "ltm",
+                "query": "document classification examples",
+                "limit": 3,
+                "label": "Similar Classifications from Memory"
+              }
+            ],
+            "inject_as": "user",
+            "synthesis": {
+              "strategy": "structured"
+            },
+            "input_guardrails": {
+              "pii": {
+                "enabled": true,
+                "action": "redact"
+              },
+              "prompt_injection": {
+                "enabled": true,
+                "action": "block"
+              },
+              "context_length": {
+                "enabled": true,
+                "max_chars": 4000,
+                "on_exceed": "truncate"
+              }
+            }
+          },
+
+          "output_schema": {
+            "format": "json",
+            "state_key": "classification",
+            "required_fields": ["classification", "confidence_score"]
+          },
+
+          "validation": {
+            "enabled": true,
+            "required_fields": ["classification", "confidence_score"],
+            "rules": [
+              { "field": "confidence_score", "operator": ">=", "value": 0.0 },
+              { "field": "confidence_score", "operator": "<=", "value": 1.0 }
+            ],
+            "on_failure": "warn"
+          },
+
+          "guardrails": {
+            "pii": {
+              "enabled": true,
+              "action": "redact"
+            },
+            "harmful_content": {
+              "enabled": true,
+              "action": "block"
+            }
+          }
+        },
+
+        {
+          "id": "Supervisor",
+          "type": "agent",
+          "description": "Routing supervisor. Sends low-confidence docs back to Classifier, sensitive docs (medical/legal) to ResearchAgent, and stalled docs to HumanApproval.",
+          "system_prompt": "You are a routing supervisor. Evaluate the classification result and decide next steps. Consider confidence score, document type, and retry count.",
+          "routing_logic": [
+            { "condition": "confidence_score < 0.6", "next": "Classifier" },
+            { "condition": "classification == 'medical'", "next": "ResearchAgent" },
+            { "condition": "classification == 'legal'", "next": "ResearchAgent" },
+            { "condition": "retry_count > 2", "next": "HumanApproval" },
+            { "condition": "confidence_score >= 0.6", "next": "VerifierAgent" }
+          ],
+
+          "llm_config": {
+            "temperature": 0.0,
+            "max_tokens": 128
+          },
+
+          "context": {
+            "sources": [
+              {
+                "type": "previous_node",
+                "node_id": "Classifier",
+                "label": "Classification Result"
+              },
+              {
+                "type": "stm",
+                "keys": ["classification", "confidence_score", "retry_count"],
+                "label": "Current State"
+              }
+            ],
+            "inject_as": "user",
+            "synthesis": {
+              "strategy": "structured"
+            }
+          }
+        },
+
+        {
+          "id": "ResearchAgent",
+          "type": "agent",
+          "description": "Specialist for sensitive (medical/legal) documents. Runs a web search pre-LLM tool call, RAG over regulations, then synthesizes findings via LLM.",
+          "system_prompt": "You are a regulatory research specialist. Search for compliance requirements and precedents for this document type. Return JSON: {research_notes: string, regulatory_refs: array of strings, risk_level: string}.",
+          "tools": ["web_search"],
+          "memory_access": ["short_term", "long_term"],
+          "next": "VerifierAgent",
+
+          "pre_llm": {
+            "tool_calls": [
+              {
+                "id": "web_search_regulations",
+                "tool": "web_search",
+                "input_template": "regulatory compliance requirements for {state.classification} documents",
+                "output_var": "regulation_results",
+                "inject_into_context": true
+              }
+            ],
+            "rag": {
+              "enabled": true,
+              "provider": "ltm",
+              "collection": "doc_intelligence_ltm",
+              "query_template": "{state.classification} regulations compliance requirements",
+              "top_k": 5,
+              "score_threshold": 0.4,
+              "output_var": "rag_regulations",
+              "inject_into_context": true
+            }
+          },
+
+          "llm_config": {
+            "temperature": 0.3,
+            "max_tokens": 1024,
+            "model": null
+          },
+
+          "context": {
+            "sources": [
+              {
+                "type": "previous_node",
+                "label": "Prior Supervisor Output"
+              },
+              {
+                "type": "stm",
+                "keys": ["classification", "summary"],
+                "label": "Document Context"
+              },
+              {
+                "type": "pre_llm",
+                "label": "Web Search & RAG Results"
+              }
+            ],
+            "inject_as": "user",
+            "synthesis": {
+              "strategy": "summarize",
+              "prompt_template": "Synthesize the web search results, RAG findings, and document context into a concise regulatory research briefing."
+            },
+            "input_guardrails": {
+              "context_length": {
+                "enabled": true,
+                "max_chars": 12000,
+                "on_exceed": "truncate"
+              },
+              "secrets_detection": {
+                "enabled": true,
+                "action": "redact"
+              }
+            }
+          },
+
+          "output_schema": {
+            "format": "json",
+            "state_key": "research_notes",
+            "required_fields": ["research_notes", "regulatory_refs"]
+          },
+
+          "validation": {
+            "enabled": true,
+            "required_fields": ["research_notes"],
+            "on_failure": "warn"
+          },
+
+          "guardrails": {
+            "regulated_advice": {
+              "enabled": true,
+              "action": "approve",
+              "checks": ["medical", "legal", "financial"]
+            }
+          }
+        },
+
+        {
+          "id": "VerifierAgent",
+          "type": "agent",
+          "description": "Quality verifier. Reviews classification and research, enforces confidence >= 0.7 via validation rule. Applies full safety guardrail suite.",
+          "system_prompt": "You are a quality verifier. Review the classification and any research findings, checking for accuracy and completeness. Return JSON: {verified: boolean, issues: array of strings, final_classification: string, confidence_score: float}.",
+          "memory_access": ["short_term"],
+          "next": "ResultWriter",
+
+          "llm_config": {
+            "temperature": 0.1,
+            "max_tokens": 512
+          },
+
+          "context": {
+            "sources": [
+              {
+                "type": "previous_node",
+                "label": "Research or Supervisor Output"
+              },
+              {
+                "type": "stm",
+                "keys": ["classification", "confidence_score", "summary", "research_notes"],
+                "label": "Full State Context"
+              }
+            ],
+            "inject_as": "user",
+            "synthesis": {
+              "strategy": "structured"
+            },
+            "input_guardrails": {
+              "pii": {
+                "enabled": true,
+                "action": "redact"
+              },
+              "context_length": {
+                "enabled": true,
+                "max_chars": 6000,
+                "on_exceed": "summarize"
+              }
+            }
+          },
+
+          "output_schema": {
+            "format": "json",
+            "state_key": "classification",
+            "required_fields": ["verified", "final_classification", "confidence_score"]
+          },
+
+          "validation": {
+            "enabled": true,
+            "required_fields": ["verified", "final_classification", "confidence_score"],
+            "rules": [
+              { "field": "confidence_score", "operator": ">=", "value": 0.7 }
+            ],
+            "on_failure": "warn"
+          },
+
+          "guardrails": {
+            "pii": {
+              "enabled": true,
+              "action": "redact"
+            },
+            "harmful_content": {
+              "enabled": true,
+              "action": "block"
+            },
+            "self_harm": {
+              "enabled": true,
+              "action": "block"
+            },
+            "hate_speech": {
+              "enabled": true,
+              "action": "block"
+            }
+          }
+        },
+
+        {
+          "id": "HumanApproval",
+          "type": "human_node",
+          "description": "Manual review checkpoint for high-risk or low-confidence documents. Workflow pauses here until a human approves or rejects.",
+          "checkpoint": true,
+          "next": "ResultWriter"
+        },
+
+        {
+          "id": "ResultWriter",
+          "type": "agent",
+          "description": "Composes the final structured record using full state context and an LTM record template. Applies PII and harmful content guardrails on output.",
+          "system_prompt": "You are a result writing agent. Compose the final structured record for this document. Include classification, confidence, summary, research notes, and approval status. Return JSON: {final_record: object, status: string, processing_notes: string}.",
+          "memory_access": ["short_term", "long_term"],
+          "next": "END",
+
+          "llm_config": {
+            "temperature": 0.2,
+            "max_tokens": 1024
+          },
+
+          "context": {
+            "sources": [
+              {
+                "type": "stm",
+                "keys": ["classification", "confidence_score", "summary", "research_notes", "approved"],
+                "label": "Final State"
+              },
+              {
+                "type": "ltm",
+                "query": "document record output template",
+                "limit": 1,
+                "label": "Record Template from Memory"
+              }
+            ],
+            "inject_as": "user",
+            "synthesis": {
+              "strategy": "structured"
+            }
+          },
+
+          "output_schema": {
+            "format": "json",
+            "state_key": "summary",
+            "required_fields": ["final_record", "status"]
+          },
+
+          "guardrails": {
+            "pii": {
+              "enabled": true,
+              "action": "redact"
+            },
+            "harmful_content": {
+              "enabled": true,
+              "action": "block"
+            }
+          }
+        }
+      ],
+
+      "edges": [
+        { "from": "Intake",         "to": "Classifier" },
+        { "from": "Classifier",     "to": "Supervisor" },
+        { "from": "ResearchAgent",  "to": "VerifierAgent" },
+        { "from": "VerifierAgent",  "to": "ResultWriter" },
+        { "from": "HumanApproval",  "to": "ResultWriter" },
+        { "from": "ResultWriter",   "to": "END" },
+        { "from": "Supervisor",     "to": "Classifier",    "condition": "confidence_score < 0.6" },
+        { "from": "Supervisor",     "to": "ResearchAgent", "condition": "classification == 'medical' or classification == 'legal'" },
+        { "from": "Supervisor",     "to": "HumanApproval", "condition": "retry_count > 2" },
+        { "from": "Supervisor",     "to": "VerifierAgent", "condition": "confidence_score >= 0.6" }
+      ],
+
+      "parallel_execution": [],
+
+      "retry_policy": {
+        "max_retries": 3,
+        "increment_state": "retry_count",
+        "backoff_strategy": "exponential",
+        "retry_on": ["node_error", "llm_timeout"]
+      },
+
+      "checkpointing": {
+        "enabled": true,
+        "nodes": ["HumanApproval", "VerifierAgent"]
+      },
+
+      "observability_hooks": {
+        "trace_nodes": true,
+        "log_state_transitions": true,
+        "capture_agent_outputs": true
+      }
+    }
+  }
+]

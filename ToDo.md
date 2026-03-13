@@ -23,9 +23,9 @@ interconnected areas in priority order.
 | ✅ P1 | ORC-1,2,3 | Orchestrator wiring | **DONE** |
 | ✅ P1 | BNDL-1,2,3 | Code generator + requirements + .env | **DONE** |
 | ✅ P1 | SET-1,2,3 | Model selector + connection test | **DONE** |
-| 🟡 P2 | RAG-1..6 | RAG provider integrations | Enables real RAG, not just keyword match |
-| 🟡 P2 | ORC-7,8 | Human-in-loop checkpoint | Enterprise template feature |
-| 🟡 P2 | HELP-1..6 | Docs rewrite | Developer experience |
+| ✅ P2 | RAG-1..6 | RAG provider integrations | **DONE** |
+| ✅ P2 | ORC-7,8 | Human-in-loop checkpoint | **DONE** |
+| ✅ P2 | HELP-1..6 | Docs rewrite | **DONE** |
 | 🟢 P3 | BNDL-4 | docker-compose generator | Deployment polish |
 | 🟢 P3 | TRANS-5,6,7 | Multi-turn refine | Power-user feature |
 | 🟢 P3 | INF-8 | End-to-end smoke test | Quality gate |

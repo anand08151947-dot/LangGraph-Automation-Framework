@@ -156,3 +156,12 @@ export const updateLlmConfig = async (config: Record<string, string>): Promise<a
 };
 
 export default api;
+export const resumeRun = async (run_id: string, config_json: any, approval_input: Record<string, any> = {}): Promise<any> => {
+  const res = await api.post(`/resume/${run_id}`, { config_json, approval_input });
+  return res.data;
+};
+
+export const getApprovalStatus = async (run_id: string): Promise<any> => {
+  const res = await api.get(`/approval/${run_id}`);
+  return res.data;
+};

@@ -21,6 +21,14 @@ from memory_manager import MemoryManager
 from observability_manager import ObservabilityManager
 
 
+class HumanApprovalRequired(Exception):
+    def __init__(self, run_id: str, checkpoint_node: str, state: dict):
+        super().__init__(f"Workflow paused at human checkpoint: {checkpoint_node}")
+        self.run_id = run_id
+        self.checkpoint_node = checkpoint_node
+        self.state = state
+
+
 class Orchestrator:
     def __init__(self, max_retries: int = 2):
         # MCP binder may be optionally configured at runtime
@@ -115,9 +123,16 @@ class Orchestrator:
                         step_start = time.time()  # ORC-3: per-step start time
 
                         # Merge node updates into running state
+                        _human_pause_node = None
                         for node_name, node_updates in step_output.items():
                             if isinstance(node_updates, dict):
                                 last_state.update(node_updates)
+                            # Check if this node is a human_node checkpoint
+                            nodes_cfg = config_json.get("nodes", [])
+                            for n in nodes_cfg:
+                                if n.get("id") == node_name and n.get("type") == "human_node":
+                                    _human_pause_node = node_name
+                                    break
 
                         sender = last_state.get("sender", "")
 
@@ -167,6 +182,18 @@ class Orchestrator:
                                 "duration_ms": duration_ms,  # ORC-3
                             })
 
+                        # HITL: pause at human_node checkpoint
+                        if _human_pause_node:
+                            last_state["__awaiting_approval__"] = True
+                            last_state["__checkpoint_node__"] = _human_pause_node
+                            if session_id:
+                                memory_manager.save_stm(session_id, last_state)
+                            raise HumanApprovalRequired(
+                                run_id=session_id or "",
+                                checkpoint_node=_human_pause_node,
+                                state=dict(last_state),
+                            )
+
                         # Post-step hooks
                         observability.run_plugin_hooks("post_step", {
                             "step_idx": step_idx,
@@ -175,6 +202,8 @@ class Orchestrator:
 
                         break  # success – exit retry loop
 
+                    except HumanApprovalRequired:
+                        raise  # propagate without retry
                     except Exception as exc:
                         observability.log_error(exc, context={
                             "step_idx": step_idx,
@@ -197,6 +226,35 @@ class Orchestrator:
                 _timer.cancel()
 
         return last_state
+
+    def resume_run(
+        self,
+        run_id: str,
+        approval_input: Dict[str, Any],
+        config_json: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Resume a workflow paused at a human_node checkpoint.
+
+        Loads the persisted STM state, merges approval_input into it,
+        clears the __awaiting_approval__ flag, then re-runs from there.
+        """
+        memory_cfg = config_json.get("memory", {})
+        memory_manager = (
+            MemoryManager(**memory_cfg) if memory_cfg else self.memory_manager
+        )
+
+        loaded = memory_manager.load_stm(run_id)
+        if not loaded or not isinstance(loaded, dict):
+            raise ValueError(f"No saved state found for run_id={run_id}")
+        if not loaded.get("__awaiting_approval__"):
+            raise ValueError(f"Run {run_id} is not awaiting approval")
+
+        merged_state = dict(loaded)
+        merged_state.update(approval_input)
+        merged_state.pop("__awaiting_approval__", None)
+        merged_state.pop("__checkpoint_node__", None)
+
+        return self.run_workflow(config_json, session_id=run_id, initial_state=merged_state)
 
 
 # Usage example:

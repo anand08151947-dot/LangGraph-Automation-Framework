@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import ReactDOM from 'react-dom';
 import { TemplateInfo } from '../types';
 import { useWorkflowBuilder } from '../hooks/useWorkflowBuilder';
 import { saveTemplate, orchestrateAsync, getStatus, getCustomTemplates, getTemplateVersions } from '../services/api';
@@ -1548,10 +1549,777 @@ const NodeDetailPanel: React.FC<{
   );
 };
 
-// ── Live JSON Sidebar ─────────────────────────────────────────────────────────
+// ── Workflow Graph Preview (pure SVG, no external deps) ────────────────────────
 
-const LiveJsonSidebar: React.FC<{ config: any }> = ({ config }) => {
+const GNODE_W = 148;
+const GNODE_H = 56;   // taller to fit capability badges
+const RANK_GAP = 80;
+const COL_GAP = 16;
+const GPAD = 24;
+
+const GNODE_COLORS: Record<string, { fill: string; stroke: string; text: string; badge: string }> = {
+  agent:      { fill: '#eef2ff', stroke: '#6366f1', text: '#4338ca', badge: '#c7d2fe' },
+  tool_node:  { fill: '#f0fdfa', stroke: '#14b8a6', text: '#0f766e', badge: '#99f6e4' },
+  conditional:{ fill: '#fffbeb', stroke: '#f59e0b', text: '#b45309', badge: '#fde68a' },
+  human_node: { fill: '#fff1f2', stroke: '#f43f5e', text: '#be123c', badge: '#fecdd3' },
+  END:        { fill: '#f1f5f9', stroke: '#94a3b8', text: '#475569', badge: '#e2e8f0' },
+  default:    { fill: '#f8fafc', stroke: '#cbd5e1', text: '#64748b', badge: '#e2e8f0' },
+};
+
+interface GNode {
+  id: string; type: string; x: number; y: number;
+  toolCount: number;    // number of tools[]
+  hasPreLlmTools: boolean;  // pre_llm.tool_calls
+  hasRag: boolean;      // pre_llm.rag.enabled
+  hasRouting: boolean;  // routing_logic.length > 0
+  hasGuardrails: boolean;
+  hasCheckpoint: boolean;
+}
+interface GEdge { from: string; to: string; condition?: string; isRouting: boolean; }
+
+function buildGraphLayout(nodes: NodeConfig[], edges: EdgeConfig[]) {
+  if (!nodes.length) return null;
+  const allIds = nodes.map(n => n.id);
+
+  // Determine if any path ends at END
+  const anyEnd =
+    nodes.some(n => n.next === 'END' || n.routing_logic?.some(r => r.next === 'END')) ||
+    edges.some(e => e.to === 'END');
+  const displayIds = [...allIds, ...(anyEnd ? ['END'] : [])];
+
+  // Build successor map (for BFS rank assignment)
+  const succs: Record<string, string[]> = {};
+  displayIds.forEach(id => { succs[id] = []; });
+  const addS = (from: string, to: string) => {
+    const t = to === 'END' ? (anyEnd ? 'END' : null) : to;
+    if (!t || !(from in succs) || succs[from].includes(t)) return;
+    succs[from].push(t);
+  };
+  edges.forEach(e => e.from && e.to && addS(e.from, e.to));
+  nodes.forEach(n => {
+    if (n.next) addS(n.id, n.next);
+    n.routing_logic?.forEach(r => r.next && addS(n.id, r.next));
+  });
+
+  // BFS rank from first node
+  const rank: Record<string, number> = { [displayIds[0]]: 0 };
+  const q = [displayIds[0]];
+  while (q.length) {
+    const cur = q.shift()!;
+    succs[cur]?.forEach(nxt => {
+      if (rank[nxt] === undefined) { rank[nxt] = rank[cur] + 1; q.push(nxt); }
+    });
+  }
+  const maxVisited = Math.max(0, ...Object.values(rank));
+  displayIds.forEach(id => { if (rank[id] === undefined) rank[id] = maxVisited + 1; });
+
+  // Group by rank
+  const groups: Record<number, string[]> = {};
+  displayIds.forEach(id => {
+    const r = rank[id];
+    if (!groups[r]) groups[r] = [];
+    groups[r].push(id);
+  });
+  const maxRank = Math.max(...Object.keys(groups).map(Number));
+  const maxCols = Math.max(...Object.values(groups).map(g => g.length));
+
+  const svgW = Math.max(230, maxCols * (GNODE_W + COL_GAP) - COL_GAP + GPAD * 2);
+  const svgH = GPAD + (maxRank + 1) * (GNODE_H + RANK_GAP) - RANK_GAP + GNODE_H + GPAD;
+
+  // Compute node positions (centered within each rank row)
+  const pos: Record<string, { x: number; y: number }> = {};
+  Object.entries(groups).forEach(([rStr, ids]) => {
+    const r = Number(rStr);
+    const rowW = ids.length * (GNODE_W + COL_GAP) - COL_GAP;
+    const startX = (svgW - rowW) / 2;
+    const y = GPAD + r * (GNODE_H + RANK_GAP);
+    ids.forEach((id, i) => { pos[id] = { x: startX + i * (GNODE_W + COL_GAP), y }; });
+  });
+
+  // Collect drawable edges (deduplicated, track if conditional/routing)
+  const seen = new Set<string>();
+  const drawEdges: GEdge[] = [];
+  const addDE = (from: string, to: string, condition?: string, isRouting = false) => {
+    const t = to === 'END' && anyEnd ? 'END' : to;
+    const key = `${from}→${t}`;
+    if (!seen.has(key) && pos[from] && pos[t]) {
+      seen.add(key);
+      drawEdges.push({ from, to: t, condition, isRouting: isRouting || !!condition });
+    }
+  };
+  edges.forEach(e => e.from && e.to && addDE(e.from, e.to, e.condition || undefined, !!e.condition));
+  nodes.forEach(n => {
+    if (n.next) addDE(n.id, n.next);
+    n.routing_logic?.forEach(r => r.next && addDE(n.id, r.next, r.condition, true));
+  });
+
+  const gnodes: GNode[] = displayIds
+    .filter(id => pos[id])
+    .map(id => {
+      const nc = nodes.find(n => n.id === id);
+      return {
+        id, ...pos[id],
+        type: id === 'END' ? 'END' : (nc?.type ?? 'agent'),
+        toolCount: nc?.tools?.length ?? 0,
+        hasPreLlmTools: (nc?.pre_llm?.tool_calls?.length ?? 0) > 0,
+        hasRag: !!(nc?.pre_llm?.rag?.enabled),
+        hasRouting: (nc?.routing_logic?.length ?? 0) > 0,
+        hasGuardrails: !!(nc?.guardrails && Object.keys(nc.guardrails).length > 0),
+        hasCheckpoint: !!nc?.checkpoint,
+      };
+    });
+
+  return { gnodes, drawEdges, svgW, svgH };
+}
+
+const WorkflowGraphPreview: React.FC<{
+  nodes: NodeConfig[];
+  edges: EdgeConfig[];
+  selectedNodeId?: string | null;
+  onNodeClick?: (id: string) => void;
+}> = ({ nodes, edges, selectedNodeId, onNodeClick }) => {
+  const layout = useMemo(() => buildGraphLayout(nodes, edges), [nodes, edges]);
+
+  if (!layout) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-center text-slate-400">
+        <i className="fas fa-circle-nodes text-3xl mb-3 text-slate-200"></i>
+        <p className="text-xs">Add nodes to see<br />the workflow graph</p>
+      </div>
+    );
+  }
+
+  const { gnodes, drawEdges, svgW, svgH } = layout;
+  const cx = (n: GNode) => n.x + GNODE_W / 2;
+  const bot = (n: GNode) => n.y + GNODE_H;
+  const top = (n: GNode) => n.y;
+
+  return (
+    <div className="overflow-auto rounded-xl bg-white border border-slate-200">
+      <svg
+        viewBox={`0 0 ${svgW} ${svgH}`}
+        width={svgW}
+        height={svgH}
+        xmlns="http://www.w3.org/2000/svg"
+        style={{ display: 'block', maxWidth: '100%' }}
+      >
+        <defs>
+          <marker id="gph-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#94a3b8" />
+          </marker>
+          <marker id="gph-arrow-sel" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#6366f1" />
+          </marker>
+          <marker id="gph-arrow-cond" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
+          </marker>
+        </defs>
+
+        {/* Edges */}
+        {drawEdges.map((e, i) => {
+          const src = gnodes.find(n => n.id === e.from);
+          const dst = gnodes.find(n => n.id === e.to);
+          if (!src || !dst) return null;
+          const x1 = cx(src), y1 = bot(src);
+          const x2 = cx(dst), y2 = top(dst);
+          const dy = Math.abs(y2 - y1) * 0.45;
+          const path = `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
+          const isSel = e.from === selectedNodeId || e.to === selectedNodeId;
+          const isRouting = e.isRouting;
+          const edgeColor = isSel ? '#6366f1' : isRouting ? '#f59e0b' : '#cbd5e1';
+          const markerId = isSel ? 'gph-arrow-sel' : isRouting ? 'gph-arrow-cond' : 'gph-arrow';
+          const midX = (x1 + x2) / 2;
+          const midY = (y1 + y2) / 2;
+
+          // Truncate condition smartly — show up to 28 chars
+          const condLabel = e.condition
+            ? (e.condition.length > 26 ? e.condition.slice(0, 24) + '…' : e.condition)
+            : null;
+          const condW = condLabel ? Math.min(condLabel.length * 5.5 + 12, 140) : 0;
+
+          return (
+            <g key={i}>
+              <path
+                d={path}
+                fill="none"
+                stroke={edgeColor}
+                strokeWidth={isSel ? 2.5 : isRouting ? 1.5 : 1.5}
+                strokeDasharray={isRouting ? '5 3' : undefined}
+                markerEnd={`url(#${markerId})`}
+                opacity={isSel ? 1 : 0.8}
+              />
+              {condLabel && (
+                <g>
+                  {/* Pill background for condition text */}
+                  <rect
+                    x={midX - condW / 2} y={midY - 10}
+                    width={condW} height={14}
+                    rx={7}
+                    fill={isSel ? '#eef2ff' : '#fefce8'}
+                    stroke={isSel ? '#a5b4fc' : '#fde68a'}
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={midX} y={midY}
+                    textAnchor="middle"
+                    fontSize="8"
+                    fill={isSel ? '#4338ca' : '#92400e'}
+                    fontFamily="ui-monospace, monospace"
+                    fontWeight="500"
+                    style={{ userSelect: 'none' }}
+                  >
+                    {condLabel}
+                  </text>
+                </g>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Nodes */}
+        {gnodes.map(n => {
+          const colors = GNODE_COLORS[n.type] ?? GNODE_COLORS.default;
+          const isSel = n.id === selectedNodeId;
+          const isEnd = n.id === 'END';
+
+          // Capability badges: tool, pre-llm, rag, routing, guardrails, checkpoint
+          const badges: Array<{ icon: string; label: string; color: string }> = [];
+          if (!isEnd) {
+            if (n.toolCount > 0)      badges.push({ icon: '⚙', label: `${n.toolCount}T`, color: '#0f766e' });
+            if (n.hasPreLlmTools)     badges.push({ icon: '⚡', label: 'pre', color: '#7c3aed' });
+            if (n.hasRag)             badges.push({ icon: '🔍', label: 'rag', color: '#0369a1' });
+            if (n.hasRouting)         badges.push({ icon: '⇶', label: 'cond', color: '#b45309' });
+            if (n.hasGuardrails)      badges.push({ icon: '🛡', label: 'guard', color: '#be123c' });
+            if (n.hasCheckpoint)      badges.push({ icon: '⏸', label: 'ckpt', color: '#b45309' });
+          }
+
+          const badgeAreaY = n.y + GNODE_H - 17;
+
+          return (
+            <g
+              key={n.id}
+              onClick={() => !isEnd && onNodeClick?.(n.id)}
+              style={{ cursor: isEnd ? 'default' : 'pointer' }}
+            >
+              {/* Node body */}
+              <rect
+                x={n.x} y={n.y}
+                width={GNODE_W} height={GNODE_H}
+                rx={isEnd ? GNODE_H / 2 : 9}
+                fill={colors.fill}
+                stroke={isSel ? '#4f46e5' : colors.stroke}
+                strokeWidth={isSel ? 2.5 : 1.5}
+                filter={isSel ? 'drop-shadow(0 0 6px rgba(99,102,241,0.4))' : undefined}
+              />
+
+              {isEnd ? (
+                <text
+                  x={n.x + GNODE_W / 2} y={n.y + GNODE_H / 2 + 4}
+                  textAnchor="middle" fontSize="12" fontWeight="700"
+                  fill={colors.text} fontFamily="ui-sans-serif, system-ui, sans-serif"
+                  style={{ userSelect: 'none' }}
+                >END</text>
+              ) : (
+                <>
+                  {/* Node label */}
+                  <text
+                    x={n.x + GNODE_W / 2} y={n.y + 16}
+                    textAnchor="middle" fontSize="11.5" fontWeight="700"
+                    fill={colors.text} fontFamily="ui-sans-serif, system-ui, sans-serif"
+                    style={{ userSelect: 'none' }}
+                  >
+                    {n.id.length > 16 ? n.id.slice(0, 14) + '…' : n.id}
+                  </text>
+
+                  {/* Node type pill */}
+                  <rect
+                    x={n.x + GNODE_W / 2 - 26} y={n.y + 20}
+                    width={52} height={12}
+                    rx={6}
+                    fill={colors.badge}
+                  />
+                  <text
+                    x={n.x + GNODE_W / 2} y={n.y + 29.5}
+                    textAnchor="middle" fontSize="7.5" fontWeight="600"
+                    fill={colors.text} fontFamily="ui-sans-serif, system-ui, sans-serif"
+                    style={{ userSelect: 'none' }}
+                  >
+                    {n.type}
+                  </text>
+
+                  {/* Capability badges row */}
+                  {badges.length > 0 && (
+                    <g>
+                      {/* Separator line */}
+                      <line
+                        x1={n.x + 8} y1={badgeAreaY - 3}
+                        x2={n.x + GNODE_W - 8} y2={badgeAreaY - 3}
+                        stroke={colors.stroke} strokeWidth={0.5} opacity={0.3}
+                      />
+                      {badges.slice(0, 5).map((b, bi) => {
+                        const bW = b.label.length * 5 + 14;
+                        const totalW = badges.slice(0, 5).reduce((s, bb) => s + bb.label.length * 5 + 14 + 3, -3);
+                        const startBX = n.x + (GNODE_W - Math.min(totalW, GNODE_W - 8)) / 2;
+                        const prevW = badges.slice(0, bi).reduce((s, bb) => s + bb.label.length * 5 + 14 + 3, 0);
+                        const bx = startBX + prevW;
+                        return (
+                          <g key={bi}>
+                            <rect x={bx} y={badgeAreaY} width={bW} height={11} rx={5.5}
+                              fill="white" stroke={b.color} strokeWidth={0.75} opacity={0.9} />
+                            <text x={bx + bW / 2} y={badgeAreaY + 7.5}
+                              textAnchor="middle" fontSize="7" fontWeight="600"
+                              fill={b.color} fontFamily="ui-monospace, monospace"
+                              style={{ userSelect: 'none' }}>
+                              {b.label}
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </g>
+                  )}
+                </>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+};
+
+// ── Node detail rows (for full-page graph) ────────────────────────────────────
+
+interface NodeRow { icon: string; text: string; color: string; }
+
+function getNodeDetailRows(nc: NodeConfig): NodeRow[] {
+  const rows: NodeRow[] = [];
+
+  // LLM Config
+  const llm = nc.llm_config;
+  if (llm?.model || llm?.temperature !== undefined || llm?.max_tokens) {
+    const p: string[] = [];
+    if (llm.model) p.push(llm.model.split('/').pop()?.slice(0, 20) ?? llm.model.slice(0, 20));
+    if (llm.temperature !== undefined) p.push(`T=${llm.temperature}`);
+    if (llm.max_tokens) p.push(`${llm.max_tokens}tok`);
+    if (p.length) rows.push({ icon: '🤖', text: p.join(' · '), color: '#7c3aed' });
+  }
+
+  // Tools
+  if ((nc.tools?.length ?? 0) > 0) {
+    const names = nc.tools!.slice(0, 3).join(', ') + (nc.tools!.length > 3 ? ` +${nc.tools!.length - 3}` : '');
+    rows.push({ icon: '⚙', text: names, color: '#0f766e' });
+  }
+
+  // Memory Access
+  if ((nc.memory_access?.length ?? 0) > 0) {
+    const labels = nc.memory_access!.map(m => m === 'short_term' ? 'STM' : m === 'long_term' ? 'LTM' : m).join(' + ');
+    rows.push({ icon: '💾', text: labels, color: '#0369a1' });
+  }
+
+  // Pre-LLM tool calls
+  if ((nc.pre_llm?.tool_calls?.length ?? 0) > 0) {
+    rows.push({ icon: '⚡', text: `pre: ${nc.pre_llm!.tool_calls!.length} tool call(s)`, color: '#7c3aed' });
+  }
+
+  // RAG
+  if (nc.pre_llm?.rag?.enabled) {
+    const r = nc.pre_llm.rag;
+    const p = [r.provider ?? 'default'];
+    if (r.top_k) p.push(`top-${r.top_k}`);
+    rows.push({ icon: '🔍', text: `RAG: ${p.join(' ')}`, color: '#0369a1' });
+  }
+
+  // Context sources
+  if ((nc.context?.sources?.length ?? 0) > 0) {
+    const abbrev: Record<string, string> = { previous_node: 'prev', stm: 'STM', ltm: 'LTM', pre_llm: 'pre' };
+    const types = [...new Set(nc.context!.sources!.map(s => abbrev[s.type] ?? s.type))].join('+');
+    const strat = nc.context?.synthesis?.strategy ? ` (${nc.context.synthesis.strategy})` : '';
+    rows.push({ icon: '📑', text: `ctx: ${types}${strat}`, color: '#475569' });
+  }
+
+  // Output schema
+  if (nc.output_schema?.format || nc.output_schema?.state_key) {
+    const p: string[] = [];
+    if (nc.output_schema.format) p.push(nc.output_schema.format);
+    if (nc.output_schema.state_key) p.push(`→ ${nc.output_schema.state_key}`);
+    rows.push({ icon: '📋', text: p.join(' '), color: '#0f766e' });
+  }
+
+  // Validation
+  const vRules = (nc.validation?.rules?.length ?? 0) + (nc.output_schema?.validation?.rules?.length ?? 0);
+  if (nc.validation?.enabled || vRules > 0) {
+    rows.push({ icon: '✅', text: `validate: ${vRules} rule${vRules !== 1 ? 's' : ''}`, color: '#059669' });
+  }
+
+  // Output safety guardrails
+  const safeGuards = Object.entries(nc.guardrails ?? {})
+    .filter(([, v]) => (v as any)?.enabled)
+    .map(([k]) => ({ pii: 'PII', harmful_content: 'harm', hate_speech: 'hate', self_harm: 'self', regulated_advice: 'reg' }[k] ?? k.slice(0, 5)));
+  if (safeGuards.length > 0) {
+    rows.push({ icon: '🛡', text: `out: ${safeGuards.join(', ')}`, color: '#be123c' });
+  }
+
+  // Input guardrails (from context)
+  const inGuards = Object.entries(nc.context?.input_guardrails ?? {})
+    .filter(([, v]) => (v as any)?.enabled)
+    .map(([k]) => ({ pii: 'PII', prompt_injection: 'inj', secrets_detection: 'sec', profanity: 'prof', context_length: 'len' }[k] ?? k.slice(0, 4)));
+  if (inGuards.length > 0) {
+    rows.push({ icon: '🔒', text: `in-guards: ${inGuards.join(', ')}`, color: '#be123c' });
+  }
+
+  // Routing logic
+  if ((nc.routing_logic?.length ?? 0) > 0) {
+    const targets = [...new Set(nc.routing_logic!.map(r => r.next))].slice(0, 3).join(', ');
+    rows.push({ icon: '⇶', text: `${nc.routing_logic!.length} route(s) → ${targets}`, color: '#b45309' });
+  }
+
+  // Checkpoint
+  if (nc.checkpoint) {
+    rows.push({ icon: '⏸', text: 'human-in-loop checkpoint', color: '#b45309' });
+  }
+
+  return rows;
+}
+
+// ── Full-page graph layout constants ──────────────────────────────────────────
+
+const FGNODE_W = 230;
+const FGNODE_HDR = 34;   // header height (id label + type pill)
+const FGNODE_ROW_H = 14; // height per detail row
+const FGNODE_VPAD = 7;   // bottom padding
+const FGNODE_MIN = 36;   // min height for END node
+const FRANK_GAP = 100;
+const FCOL_GAP = 32;
+const FGPAD = 36;
+
+function fNodeHeight(rows: NodeRow[]): number {
+  if (rows.length === 0) return FGNODE_MIN;
+  return FGNODE_HDR + 4 + rows.length * FGNODE_ROW_H + FGNODE_VPAD;
+}
+
+interface FGNode { id: string; type: string; x: number; y: number; height: number; rows: NodeRow[]; }
+interface FGEdge { from: string; to: string; condition?: string; isRouting: boolean; }
+
+function buildFullPageLayout(nodes: NodeConfig[], edges: EdgeConfig[]) {
+  if (!nodes.length) return null;
+  const allIds = nodes.map(n => n.id);
+  const nodeRowsMap: Record<string, NodeRow[]> = {};
+  nodes.forEach(n => { nodeRowsMap[n.id] = getNodeDetailRows(n); });
+
+  const anyEnd =
+    nodes.some(n => n.next === 'END' || n.routing_logic?.some(r => r.next === 'END')) ||
+    edges.some(e => e.to === 'END');
+  const displayIds = [...allIds, ...(anyEnd ? ['END'] : [])];
+
+  const succs: Record<string, string[]> = {};
+  displayIds.forEach(id => { succs[id] = []; });
+  const addS = (from: string, to: string) => {
+    const t = to === 'END' ? (anyEnd ? 'END' : null) : to;
+    if (!t || !(from in succs) || succs[from].includes(t)) return;
+    succs[from].push(t);
+  };
+  edges.forEach(e => e.from && e.to && addS(e.from, e.to));
+  nodes.forEach(n => {
+    if (n.next) addS(n.id, n.next);
+    n.routing_logic?.forEach(r => r.next && addS(n.id, r.next));
+  });
+
+  const rank: Record<string, number> = { [displayIds[0]]: 0 };
+  const q = [displayIds[0]];
+  while (q.length) {
+    const cur = q.shift()!;
+    succs[cur]?.forEach(nxt => {
+      if (rank[nxt] === undefined) { rank[nxt] = rank[cur] + 1; q.push(nxt); }
+    });
+  }
+  const maxVisited = Math.max(0, ...Object.values(rank));
+  displayIds.forEach(id => { if (rank[id] === undefined) rank[id] = maxVisited + 1; });
+
+  const groups: Record<number, string[]> = {};
+  displayIds.forEach(id => {
+    const r = rank[id];
+    if (!groups[r]) groups[r] = [];
+    groups[r].push(id);
+  });
+  const maxRank = Math.max(...Object.keys(groups).map(Number));
+  const maxCols = Math.max(...Object.values(groups).map(g => g.length));
+
+  // Per-rank max heights → cumulative Y positions
+  const rankMaxH: Record<number, number> = {};
+  Object.entries(groups).forEach(([rStr, ids]) => {
+    rankMaxH[Number(rStr)] = Math.max(...ids.map(id => fNodeHeight(nodeRowsMap[id] ?? [])));
+  });
+  const rankY: Record<number, number> = { 0: FGPAD };
+  for (let r = 1; r <= maxRank; r++) {
+    rankY[r] = rankY[r - 1] + rankMaxH[r - 1] + FRANK_GAP;
+  }
+
+  const svgW = Math.max(350, maxCols * (FGNODE_W + FCOL_GAP) - FCOL_GAP + FGPAD * 2);
+  const svgH = rankY[maxRank] + (rankMaxH[maxRank] ?? FGNODE_MIN) + FGPAD;
+
+  const pos: Record<string, { x: number; y: number }> = {};
+  Object.entries(groups).forEach(([rStr, ids]) => {
+    const r = Number(rStr);
+    const rowW = ids.length * (FGNODE_W + FCOL_GAP) - FCOL_GAP;
+    const startX = (svgW - rowW) / 2;
+    ids.forEach((id, i) => { pos[id] = { x: startX + i * (FGNODE_W + FCOL_GAP), y: rankY[r] }; });
+  });
+
+  const seen = new Set<string>();
+  const drawEdges: FGEdge[] = [];
+  const addDE = (from: string, to: string, condition?: string, isRouting = false) => {
+    const t = to === 'END' && anyEnd ? 'END' : to;
+    const key = `${from}→${t}`;
+    if (!seen.has(key) && pos[from] && pos[t]) {
+      seen.add(key); drawEdges.push({ from, to: t, condition, isRouting: isRouting || !!condition });
+    }
+  };
+  edges.forEach(e => e.from && e.to && addDE(e.from, e.to, e.condition, !!e.condition));
+  nodes.forEach(n => {
+    if (n.next) addDE(n.id, n.next);
+    n.routing_logic?.forEach(r => r.next && addDE(n.id, r.next, r.condition, true));
+  });
+
+  const fgnodes: FGNode[] = displayIds
+    .filter(id => pos[id])
+    .map(id => ({
+      id, ...pos[id],
+      type: id === 'END' ? 'END' : (nodes.find(n => n.id === id)?.type ?? 'agent'),
+      height: fNodeHeight(nodeRowsMap[id] ?? []),
+      rows: nodeRowsMap[id] ?? [],
+    }));
+
+  return { fgnodes, drawEdges, svgW, svgH };
+}
+
+// ── Full-page graph SVG renderer ──────────────────────────────────────────────
+
+const FullPageWorkflowGraph: React.FC<{ nodes: NodeConfig[]; edges: EdgeConfig[]; }> = ({ nodes, edges }) => {
+  const layout = useMemo(() => buildFullPageLayout(nodes, edges), [nodes, edges]);
+  if (!layout) return <div className="flex items-center justify-center py-20 text-slate-400">Add nodes to see the graph</div>;
+
+  const { fgnodes, drawEdges, svgW, svgH } = layout;
+  const fcx = (n: FGNode) => n.x + FGNODE_W / 2;
+  const fbot = (n: FGNode) => n.y + n.height;
+
+  return (
+    <div className="overflow-auto rounded-xl bg-white border border-slate-200 shadow-sm">
+      <svg viewBox={`0 0 ${svgW} ${svgH}`} width={svgW} height={svgH} xmlns="http://www.w3.org/2000/svg" style={{ display: 'block' }}>
+        <defs>
+          <marker id="fp-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#94a3b8" />
+          </marker>
+          <marker id="fp-arrow-cond" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#f59e0b" />
+          </marker>
+        </defs>
+
+        {/* Edges */}
+        {drawEdges.map((e, i) => {
+          const src = fgnodes.find(n => n.id === e.from);
+          const dst = fgnodes.find(n => n.id === e.to);
+          if (!src || !dst) return null;
+          const x1 = fcx(src), y1 = fbot(src);
+          const x2 = fcx(dst), y2 = dst.y;
+          const dy = Math.abs(y2 - y1) * 0.5;
+          const path = `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
+          const edgeColor = e.isRouting ? '#f59e0b' : '#94a3b8';
+          const midX = (x1 + x2) / 2, midY = (y1 + y2) / 2;
+          const condLabel = e.condition
+            ? (e.condition.length > 36 ? e.condition.slice(0, 34) + '…' : e.condition)
+            : null;
+          const condW = condLabel ? Math.min(condLabel.length * 6.2 + 18, 200) : 0;
+          return (
+            <g key={i}>
+              <path d={path} fill="none" stroke={edgeColor} strokeWidth={1.5}
+                strokeDasharray={e.isRouting ? '6 3' : undefined}
+                markerEnd={`url(#${e.isRouting ? 'fp-arrow-cond' : 'fp-arrow'})`} opacity={0.85}
+              />
+              {condLabel && (
+                <g>
+                  <rect x={midX - condW / 2} y={midY - 10} width={condW} height={17} rx={8.5}
+                    fill="#fefce8" stroke="#fde68a" strokeWidth={1} />
+                  <text x={midX} y={midY + 2.5} textAnchor="middle" fontSize="9.5" fill="#92400e"
+                    fontFamily="ui-monospace, monospace" fontWeight="500" style={{ userSelect: 'none' }}>
+                    {condLabel}
+                  </text>
+                </g>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Nodes */}
+        {fgnodes.map(n => {
+          const colors = GNODE_COLORS[n.type] ?? GNODE_COLORS.default;
+          const isEnd = n.id === 'END';
+          const typeText = n.type;
+          const tW = typeText.length * 6.8 + 12;
+          return (
+            <g key={n.id}>
+              {/* Card body */}
+              <rect x={n.x} y={n.y} width={FGNODE_W} height={n.height}
+                rx={isEnd ? n.height / 2 : 10}
+                fill={colors.fill} stroke={colors.stroke} strokeWidth={1.5}
+              />
+              {isEnd ? (
+                <text x={n.x + FGNODE_W / 2} y={n.y + n.height / 2 + 5}
+                  textAnchor="middle" fontSize="14" fontWeight="700"
+                  fill={colors.text} fontFamily="ui-sans-serif, system-ui, sans-serif" style={{ userSelect: 'none' }}>
+                  END
+                </text>
+              ) : (
+                <>
+                  {/* Node ID */}
+                  <text x={n.x + 10} y={n.y + 15} fontSize="12" fontWeight="700"
+                    fill={colors.text} fontFamily="ui-sans-serif, system-ui, sans-serif" style={{ userSelect: 'none' }}>
+                    {n.id.length > 22 ? n.id.slice(0, 20) + '…' : n.id}
+                  </text>
+                  {/* Type pill (top-right) */}
+                  <rect x={n.x + FGNODE_W - tW - 8} y={n.y + 5} width={tW} height={15} rx={7.5} fill={colors.badge} />
+                  <text x={n.x + FGNODE_W - tW / 2 - 8} y={n.y + 15.5} textAnchor="middle"
+                    fontSize="8.5" fontWeight="600" fill={colors.text}
+                    fontFamily="ui-sans-serif, system-ui, sans-serif" style={{ userSelect: 'none' }}>
+                    {typeText}
+                  </text>
+                  {/* Separator */}
+                  {n.rows.length > 0 && (
+                    <line x1={n.x + 8} y1={n.y + FGNODE_HDR - 2}
+                      x2={n.x + FGNODE_W - 8} y2={n.y + FGNODE_HDR - 2}
+                      stroke={colors.stroke} strokeWidth={0.75} opacity={0.35}
+                    />
+                  )}
+                  {/* Detail rows */}
+                  {n.rows.map((row, ri) => {
+                    const rowY = n.y + FGNODE_HDR + 4 + ri * FGNODE_ROW_H + FGNODE_ROW_H - 3;
+                    const maxLen = Math.floor((FGNODE_W - 30) / 6.5);
+                    const label = row.text.length > maxLen ? row.text.slice(0, maxLen - 1) + '…' : row.text;
+                    return (
+                      <g key={ri}>
+                        {/* Left accent bar */}
+                        <rect x={n.x + 8} y={n.y + FGNODE_HDR + 4 + ri * FGNODE_ROW_H + 2}
+                          width={2.5} height={FGNODE_ROW_H - 4} rx={1.25} fill={row.color} opacity={0.75}
+                        />
+                        {/* Icon + text */}
+                        <text x={n.x + 15} y={rowY} fontSize="9.5" fill="#334155"
+                          fontFamily="ui-sans-serif, system-ui, sans-serif" style={{ userSelect: 'none' }}>
+                          {row.icon} {label}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+};
+
+// ── Full-page modal wrapper (rendered via portal to escape any overflow/sticky ancestor) ──
+
+const GraphFullPageModal: React.FC<{
+  nodes: NodeConfig[];
+  edges: EdgeConfig[];
+  onClose: () => void;
+}> = ({ nodes, edges, onClose }) => {
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', h);
+    // Lock body scroll while modal is open
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', h);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  const modal = (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(15,23,42,0.88)', backdropFilter: 'blur(4px)', display: 'flex', flexDirection: 'column' }}
+      onClick={onClose}
+    >
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+
+        {/* ── Top bar */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 24px', background: '#1e293b', borderBottom: '1px solid #334155', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <i className="fas fa-circle-nodes" style={{ color: '#818cf8', fontSize: 18 }}></i>
+            <div>
+              <span style={{ color: '#f1f5f9', fontWeight: 700, fontSize: 14 }}>Workflow Graph — Full Detail View</span>
+              <span style={{ color: '#94a3b8', fontSize: 11, marginLeft: 12 }}>All configured settings per node · Esc to close</span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {/* Node type legend */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {Object.entries(GNODE_COLORS).filter(([k]) => k !== 'END' && k !== 'default').map(([type, c]) => (
+                <span key={type} style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: c.fill, color: c.text, border: `1px solid ${c.stroke}` }}>
+                  {type.replace('_', ' ')}
+                </span>
+              ))}
+            </div>
+            <button onClick={onClose}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 8, border: '1px solid #475569', background: 'transparent', color: '#cbd5e1', cursor: 'pointer', fontSize: 12 }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = '#94a3b8'; (e.currentTarget as HTMLButtonElement).style.color = '#f1f5f9'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = '#475569'; (e.currentTarget as HTMLButtonElement).style.color = '#cbd5e1'; }}
+            >
+              <i className="fas fa-xmark"></i> Close
+            </button>
+          </div>
+        </div>
+
+        {/* ── Icon legend bar */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', padding: '6px 24px', background: 'rgba(30,41,59,0.7)', borderBottom: '1px solid rgba(51,65,85,0.5)', fontSize: 10, color: '#94a3b8', flexShrink: 0 }}>
+          {[
+            { icon: '🤖', text: 'LLM config' }, { icon: '⚙', text: 'tools' },
+            { icon: '💾', text: 'memory' },      { icon: '⚡', text: 'pre-LLM' },
+            { icon: '🔍', text: 'RAG' },          { icon: '📑', text: 'context src' },
+            { icon: '📋', text: 'output schema' },{ icon: '✅', text: 'validation' },
+            { icon: '🛡', text: 'out-guards' },   { icon: '🔒', text: 'in-guards' },
+            { icon: '⇶', text: 'routing' },       { icon: '⏸', text: 'checkpoint' },
+          ].map(b => (
+            <span key={b.text} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+              <span>{b.icon}</span><span>{b.text}</span>
+            </span>
+          ))}
+          <span style={{ color: '#475569', margin: '0 4px' }}>·</span>
+          <span style={{ color: '#fbbf24' }}>amber dashed = conditional edge</span>
+        </div>
+
+        {/* ── Graph canvas */}
+        <div style={{ flex: 1, overflow: 'auto', padding: 24, background: '#f8fafc' }}>
+          {nodes.length === 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', fontSize: 14 }}>
+              No nodes defined yet. Add nodes in the builder to see the graph.
+            </div>
+          ) : (
+            <FullPageWorkflowGraph nodes={nodes} edges={edges} />
+          )}
+        </div>
+
+      </div>
+    </div>
+  );
+
+  return ReactDOM.createPortal(modal, document.body);
+};
+
+// ── Right Side Panel — Graph preview + Live JSON toggle ────────────────────────
+
+const LiveJsonSidebar: React.FC<{
+  config: any;
+  nodes: NodeConfig[];
+  edges: EdgeConfig[];
+  selectedNodeId?: string | null;
+  onNodeClick?: (id: string) => void;
+}> = ({ config, nodes, edges, selectedNodeId, onNodeClick }) => {
+  const [view, setView] = useState<'graph' | 'json'>('graph');
   const [copied, setCopied] = useState(false);
+  const [showFullPage, setShowFullPage] = useState(false);
   const text = useMemo(() => JSON.stringify(config, null, 2), [config]);
 
   const copy = () => {
@@ -1559,24 +2327,100 @@ const LiveJsonSidebar: React.FC<{ config: any }> = ({ config }) => {
   };
 
   return (
-    <div className="w-56 flex-shrink-0 sticky top-4 self-start">
-      <div className="bg-slate-900 rounded-2xl overflow-hidden shadow-lg">
-        <div className="flex items-center justify-between px-3 py-2 bg-slate-800">
-          <div className="flex gap-1">
-            <div className="w-2.5 h-2.5 rounded-full bg-rose-500"></div>
-            <div className="w-2.5 h-2.5 rounded-full bg-amber-500"></div>
-            <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-          </div>
-          <span className="text-[10px] text-slate-400 font-mono">workflow.json</span>
-          <button onClick={copy} className="text-xs text-slate-400 hover:text-white transition-colors" title="Copy JSON">
-            <i className={`fas ${copied ? 'fa-check text-emerald-400' : 'fa-copy'}`}></i>
-          </button>
-        </div>
-        <pre className="p-3 text-[10px] text-emerald-300 font-mono overflow-auto max-h-[calc(100vh-200px)] leading-relaxed whitespace-pre-wrap break-all">
-          {text}
-        </pre>
+    <>
+      {showFullPage && (
+        <GraphFullPageModal nodes={nodes} edges={edges} onClose={() => setShowFullPage(false)} />
+      )}
+    <div className="w-64 flex-shrink-0 sticky top-4 self-start flex flex-col gap-2">
+      {/* Graph / JSON toggle */}
+      <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl">
+        <button
+          onClick={() => setView('graph')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            view === 'graph' ? 'bg-white shadow-sm text-indigo-700' : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <i className="fas fa-circle-nodes text-[10px]"></i> Graph
+        </button>
+        <button
+          onClick={() => setView('json')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            view === 'json' ? 'bg-white shadow-sm text-indigo-700' : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <i className="fas fa-code text-[10px]"></i> JSON
+        </button>
       </div>
+
+      {/* Full-page expand — always visible when graph tab active and nodes exist */}
+      {view === 'graph' && nodes.length > 0 && (
+        <button
+          onClick={() => setShowFullPage(true)}
+          className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50 hover:bg-indigo-100 hover:border-indigo-400 text-indigo-700 font-semibold text-xs transition-all group"
+        >
+          <i className="fas fa-expand-alt group-hover:scale-110 transition-transform"></i>
+          Full Detail View
+          <span className="text-indigo-400 font-normal text-[10px] ml-1">— all node settings</span>
+        </button>
+      )}
+
+      {view === 'graph' ? (
+        <div className="overflow-auto max-h-[calc(100vh-160px)]">
+          {/* Legend */}
+          <div className="flex flex-wrap gap-1.5 mb-2 px-1">
+            {Object.entries(GNODE_COLORS).filter(([k]) => k !== 'END' && k !== 'default').map(([type, c]) => (
+              <span key={type} className="flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: c.fill, color: c.text, border: `1px solid ${c.stroke}` }}>
+                {type.replace('_', ' ')}
+              </span>
+            ))}
+          </div>
+          {/* Badge legend */}
+          <div className="flex flex-wrap gap-1 mb-2 px-1">
+            {([
+              { label: '⚙ 2T', title: 'tools', color: '#0f766e' },
+              { label: '⚡ pre', title: 'pre-LLM tools', color: '#7c3aed' },
+              { label: '🔍 rag', title: 'RAG enabled', color: '#0369a1' },
+              { label: '⇶ cond', title: 'conditional routing', color: '#b45309' },
+              { label: '🛡 guard', title: 'guardrails', color: '#be123c' },
+            ] as const).map(b => (
+              <span key={b.title} title={b.title}
+                className="text-[8px] font-mono px-1 py-0 rounded-full border"
+                style={{ color: b.color, borderColor: b.color, background: 'white' }}>
+                {b.label}
+              </span>
+            ))}
+            <span className="text-[8px] text-slate-400 self-center ml-0.5">node badges</span>
+          </div>
+          <WorkflowGraphPreview
+            nodes={nodes}
+            edges={edges}
+            selectedNodeId={selectedNodeId}
+            onNodeClick={onNodeClick}
+          />
+          {nodes.length > 0 && (
+            <p className="text-[9px] text-slate-400 text-center mt-1.5">Click a node to edit it</p>
+          )}
+        </div>
+      ) : (
+        <div className="bg-slate-900 rounded-2xl overflow-hidden shadow-lg">
+          <div className="flex items-center justify-between px-3 py-2 bg-slate-800">
+            <div className="flex gap-1">
+              <div className="w-2.5 h-2.5 rounded-full bg-rose-500"></div>
+              <div className="w-2.5 h-2.5 rounded-full bg-amber-500"></div>
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
+            </div>
+            <span className="text-[10px] text-slate-400 font-mono">workflow.json</span>
+            <button onClick={copy} className="text-xs text-slate-400 hover:text-white transition-colors" title="Copy JSON">
+              <i className={`fas ${copied ? 'fa-check text-emerald-400' : 'fa-copy'}`}></i>
+            </button>
+          </div>
+          <pre className="p-3 text-[10px] text-emerald-300 font-mono overflow-auto max-h-[calc(100vh-200px)] leading-relaxed whitespace-pre-wrap break-all">
+            {text}
+          </pre>
+        </div>
+      )}
     </div>
+    </>
   );
 };
 
@@ -2562,9 +3406,11 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
             </div>
           </div>
 
-          {/* Flow diagram */}
+          {/* ASCII flow diagram — textual connectivity summary */}
           <div className="p-5 bg-slate-900 rounded-2xl">
-            <p className="text-xs text-slate-400 font-bold uppercase tracking-widest mb-3">Flow Diagram</p>
+            <p className="text-xs text-slate-400 font-bold uppercase tracking-widest mb-3">
+              <i className="fas fa-diagram-project mr-1.5 text-slate-500"></i>Connectivity Summary
+            </p>
             <pre className="text-xs text-emerald-300 font-mono leading-relaxed whitespace-pre-wrap">
               {buildFlowDiagram()}
             </pre>
@@ -2707,9 +3553,15 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
             {tabContent[activeTab]?.()}
           </div>
 
-          {/* ── Right: live JSON sidebar */}
+          {/* ── Right: live graph + JSON panel */}
           <div className="p-4 border-l border-slate-200 bg-white">
-            <LiveJsonSidebar config={config} />
+            <LiveJsonSidebar
+              config={config}
+              nodes={nodes}
+              edges={edges}
+              selectedNodeId={selectedNodeId}
+              onNodeClick={(id) => { setSelectedNodeId(id); setActiveTab('nodes'); }}
+            />
           </div>
         </div>
       </div>

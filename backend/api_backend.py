@@ -170,7 +170,7 @@ from template_manager import TemplateManager, TemplateVersion
 
 from llm_translator import LLMTranslator
 try:
-    from orchestrator import Orchestrator
+    from orchestrator import Orchestrator, HumanApprovalRequired
 except Exception as e:
     # Orchestrator (and its dependencies like langgraph) may not be installed in this environment.
     # We provide a lightweight fallback so the API can start for LLM/manual testing.
@@ -181,6 +181,8 @@ except Exception as e:
         def __init__(self, *args, **kwargs):
             # Use the captured error message rather than the exception object which may be out of scope
             raise RuntimeError("Orchestrator not available in this environment: " + _orchestrator_import_error)
+    class HumanApprovalRequired(Exception):  # fallback stub
+        pass
 from memory_manager import MemoryManager
 from observability_manager import ObservabilityManager
 from config_manager import ConfigManager
@@ -507,6 +509,16 @@ def _run_workflow_async(run_id, config_json):
                    end_time=__import__("datetime").datetime.utcnow(),
                    logs=json.dumps([f"Workflow {run_id} completed in {elapsed}."]))
         logger.info(f"Workflow {run_id} completed.")
+    except HumanApprovalRequired as hap:
+        workflow_status[run_id].update({
+            "status": "awaiting_approval",
+            "result": None,
+            "checkpoint_node": hap.checkpoint_node,
+            "state_snapshot": hap.state,
+        })
+        upsert_run(run_id, status="awaiting_approval",
+                   result=f"Paused at {hap.checkpoint_node}")
+        logger.info(f"Workflow {run_id} paused for human approval at {hap.checkpoint_node}")
     except Exception as e:
         elapsed = f"{_t.time() - start:.2f}s"
         workflow_status[run_id].update({"status": "error", "result": str(e)})
@@ -548,7 +560,56 @@ def orchestrate_async(req: OrchestrationRequest, template_name: Optional[str] = 
 
     return {"run_id": run_id, "status": "started"}
 
-def _to_serializable(obj):
+class ResumeRequest(BaseModel):
+    config_json: Dict[str, Any]
+    approval_input: Dict[str, Any] = {}
+
+@app.post("/resume/{run_id}")
+def resume_run(run_id: str, req: ResumeRequest):
+    """Resume a workflow paused at a human_node checkpoint."""
+    status = workflow_status.get(run_id)
+    if not status or status.get("status") != "awaiting_approval":
+        raise HTTPException(status_code=400, detail="Run is not awaiting approval")
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Orchestrator not available")
+
+    def _resume():
+        try:
+            result = orchestrator.resume_run(run_id, req.approval_input, req.config_json)
+            workflow_status[run_id].update({"status": "completed", "result": result})
+            upsert_run(run_id, status="completed", result=result)
+            logger.info(f"Workflow {run_id} resumed and completed.")
+        except HumanApprovalRequired as hap:
+            workflow_status[run_id].update({
+                "status": "awaiting_approval",
+                "checkpoint_node": hap.checkpoint_node,
+                "state_snapshot": hap.state,
+            })
+            upsert_run(run_id, status="awaiting_approval", result=f"Paused at {hap.checkpoint_node}")
+        except Exception as e:
+            workflow_status[run_id].update({"status": "error", "result": str(e)})
+            upsert_run(run_id, status="error", result=str(e))
+            logger.error(f"Resume of {run_id} failed: {e}")
+
+    workflow_status[run_id]["status"] = "resuming"
+    t = threading.Thread(target=_resume)
+    t.start()
+    return {"run_id": run_id, "status": "resuming"}
+
+@app.get("/approval/{run_id}")
+def get_approval_status(run_id: str):
+    """Get checkpoint info for a run awaiting human approval."""
+    status = workflow_status.get(run_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {
+        "run_id": run_id,
+        "status": status.get("status"),
+        "checkpoint_node": status.get("checkpoint_node"),
+        "state_snapshot": _to_serializable(status.get("state_snapshot", {})),
+    }
+
+
     # Reusable converter for API responses (matches ws serializer)
     try:
         if obj is None or isinstance(obj, (str, int, float, bool)):

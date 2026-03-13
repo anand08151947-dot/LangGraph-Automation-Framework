@@ -37,6 +37,7 @@ except ImportError:
 from typing import TypedDict, Any, Dict, List, Optional, get_type_hints
 import json
 import logging
+import os
 import re
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,14 @@ except ImportError:
     def validate_output(text, schema, node_id=""): return True, None, None  # type: ignore
     def build_context_messages(node_cfg, state, mm=None, sid="", pre_llm_results=None): return []  # type: ignore
     class GuardrailViolation(Exception): pass  # type: ignore
+
+try:
+    from llm_caller import call_llm, LLMCallError
+except ImportError:
+    # Fallback stub — keeps factory importable even without llm_caller
+    def call_llm(system_prompt, user_prompt, llm_params=None, global_config=None):  # type: ignore
+        return f"[LLM stub] system={system_prompt[:80]} | user={user_prompt[:120]}"
+    class LLMCallError(Exception): pass  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Type helpers
@@ -235,39 +244,30 @@ def _execute_rag_search(
     top_k: int = rag_cfg.get("top_k", 5)
     collection: str = rag_cfg.get("collection", "")
     provider: str = rag_cfg.get("provider", "ltm").lower()
-    score_threshold: float = rag_cfg.get("score_threshold", 0.0)
 
-    # ── LTM-backed search ─────────────────────────────────────────────
-    if memory_manager is not None and provider in ("ltm", "local", ""):
-        try:
-            entries = memory_manager.query_ltm(
-                session_id=session_id,
-                keyword=query,
-                limit=top_k,
-            )
-            if entries:
-                chunks = [
-                    f"[Doc {i+1}] {e.get('content', str(e))}"
-                    for i, e in enumerate(entries)
-                ]
-                return "\n\n".join(chunks)
-        except Exception as exc:
-            logger.warning("LTM RAG search failed: %s", exc)
+    try:
+        from rag_provider import RagProviderRegistry
+        prov = RagProviderRegistry.get_provider(
+            provider_name=provider,
+            config=rag_cfg,
+            memory_manager=memory_manager,
+            session_id=session_id,
+        )
+        results = prov.search(
+            query=query,
+            collection=collection,
+            top_k=top_k,
+            score_threshold=rag_cfg.get("score_threshold", 0.0),
+        )
+    except Exception as exc:
+        logger.warning("RAG search failed (%s): %s", provider, exc)
+        results = []
 
-    # ── External provider stubs (wire in SDK calls here) ──────────────
-    # chroma / milvus / pinecone / weaviate → implement via provider SDK
-    # Example hook (replace with real implementation):
-    #   if provider == "chroma":
-    #       from chromadb import Client
-    #       client = Client(); coll = client.get_collection(collection)
-    #       results = coll.query(query_texts=[query], n_results=top_k)
-    #       return "\n\n".join([f"[Doc {i+1}] {d}" for i,d in enumerate(results["documents"][0])])
+    if not results:
+        return f"[RAG:{provider}] No results found for query: {query[:100]}"
 
-    # Placeholder so pipeline keeps moving
-    return (
-        f"[RAG:{provider}/{collection}] Search query='{query[:100]}' top_k={top_k} "
-        f"— no live provider wired yet. Wire SDK in _execute_rag_search()."
-    )
+    chunks = [f"[Doc {i+1}] {r}" for i, r in enumerate(results)]
+    return "\n\n".join(chunks)
 
 
 
@@ -334,6 +334,7 @@ def _agent_node_func(
     memory_manager=None,
     session_id: str = "",
     bound_tools: Optional[Dict[str, Any]] = None,
+    global_config: Optional[Dict[str, Any]] = None,
 ):
     """Return a LangGraph node function for a standard LLM agent node.
 
@@ -463,19 +464,33 @@ def _agent_node_func(
             "model": llm_cfg.get("model") or None,
         }
 
-        # ── 5. Simulated LLM output (replace with real call in production) ─
-        simulated_output = effective_prompt
+        # ── 5. Real LLM call ──────────────────────────────────────────────
+        llm_output = ""
+        llm_error = None
+        try:
+            llm_output = call_llm(
+                system_prompt=system_prompt,
+                user_prompt=effective_prompt,
+                llm_params=llm_params,
+                global_config=global_config,
+            )
+            logger.info("Node %s LLM call succeeded (%d chars)", node_id, len(llm_output))
+        except LLMCallError as exc:
+            llm_error = str(exc)
+            logger.warning("Node %s LLM call failed: %s — using prompt echo as fallback", node_id, exc)
+            # Graceful degradation: return the composed prompt so the workflow keeps moving
+            llm_output = f"[LLM unavailable: {exc}]\n\nPrompt sent:\n{effective_prompt[:500]}"
 
         # ── 6. Apply OUTPUT guardrails to the LLM response ────────────────
         guardrail_status = "passed"
         guardrail_violation = None
-        processed_output = simulated_output
+        processed_output = llm_output
         if guardrails_cfg:
             try:
                 processed_output = apply_guardrails(
-                    simulated_output, guardrails_cfg, node_id
+                    llm_output, guardrails_cfg, node_id
                 )
-                if processed_output != simulated_output:
+                if processed_output != llm_output:
                     guardrail_status = "redacted"
             except GuardrailViolation as gv:
                 guardrail_status = "blocked"
@@ -638,6 +653,7 @@ def _pick_node_func(
     memory_manager=None,
     session_id: str = "",
     bound_tools: Optional[Dict[str, Any]] = None,
+    global_config: Optional[Dict[str, Any]] = None,
 ):
     """Select and return the appropriate node function based on node type."""
     ntype = node.get("type", "agent")
@@ -647,7 +663,7 @@ def _pick_node_func(
         return _conditional_node_func(node)
     if ntype == "human_node":
         return _human_node_func(node)
-    return _agent_node_func(node, memory_manager, session_id, bound_tools)  # default: agent
+    return _agent_node_func(node, memory_manager, session_id, bound_tools, global_config)  # default: agent
 
 
 # ---------------------------------------------------------------------------
@@ -764,6 +780,20 @@ class GraphFactory:
         """
         self.mcp_tool_binder = mcp_tool_binder
         self.memory_manager = memory_manager
+        # Load global config for LLM dispatch (provider, model, keys)
+        self._global_config: Dict[str, Any] = self._load_global_config()
+
+    @staticmethod
+    def _load_global_config() -> Dict[str, Any]:
+        """Load config.json from the backend directory for LLM dispatch."""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as exc:
+            logger.warning("Could not load config.json for LLM dispatch: %s", exc)
+        return {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -868,7 +898,7 @@ class GraphFactory:
             if node["id"] in checkpoint_nodes_list:
                 node["checkpoint"] = True
 
-            node_func = _pick_node_func(node, self.memory_manager, session_id, bound_tools)
+            node_func = _pick_node_func(node, self.memory_manager, session_id, bound_tools, self._global_config)
 
             # Wrap with observability logging and error-policy enforcement
             if apply_obs:
