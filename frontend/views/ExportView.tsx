@@ -143,6 +143,8 @@ const PREVIEW_TABS = [
   { id: 'agent', label: 'agent.py', icon: 'fa-robot', key: 'agent_py', lang: 'python' },
   { id: 'req', label: 'requirements.txt', icon: 'fa-box-open', key: 'requirements_txt', lang: 'text' },
   { id: 'env', label: '.env.example', icon: 'fa-key', key: 'env_example', lang: 'bash' },
+  { id: 'docker', label: 'docker-compose.yml', icon: 'fa-docker', key: 'docker_compose', lang: 'yaml' },
+  { id: 'dockerfile', label: 'Dockerfile', icon: 'fa-box', key: 'dockerfile', lang: 'dockerfile' },
   { id: 'readme', label: 'README.md', icon: 'fa-book', key: 'readme', lang: 'markdown' },
   { id: 'validation', label: 'Validation', icon: 'fa-shield-halved', key: 'validation_report', lang: 'json' },
 ] as const;
@@ -459,6 +461,22 @@ const ExportView: React.FC = () => {
                           <code className="bg-indigo-100 px-1 rounded">requirements.txt</code> and{' '}
                           <code className="bg-indigo-100 px-1 rounded">.env</code> to any server, Docker container, or cloud function.{' '}
                           No workbench dependency — fully standalone Python.
+                        </div>
+                      </div>
+                    )}
+                    {activeTab === 'docker' && (
+                      <div className="mb-3 rounded-xl bg-sky-50 border border-sky-100 px-4 py-3 flex items-start gap-3">
+                        <i className="fas fa-docker text-sky-500 mt-0.5"></i>
+                        <div className="text-xs text-sky-800">
+                          <strong>One-command deployment.</strong> Run <code className="bg-sky-100 px-1 rounded">docker-compose up --build</code> to spin up the agent and all required services (Redis, PostgreSQL, ChromaDB, MCP servers) as configured in your workflow template.
+                        </div>
+                      </div>
+                    )}
+                    {activeTab === 'dockerfile' && (
+                      <div className="mb-3 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 flex items-start gap-3">
+                        <i className="fas fa-box text-slate-500 mt-0.5"></i>
+                        <div className="text-xs text-slate-700">
+                          <strong>Build the agent image.</strong> <code className="bg-slate-100 px-1 rounded">docker build -t {codeData?.run_id?.slice(0,8) ?? 'agent'} .</code> then <code className="bg-slate-100 px-1 rounded">docker run --env-file .env agent</code>.
                         </div>
                       </div>
                     )}
