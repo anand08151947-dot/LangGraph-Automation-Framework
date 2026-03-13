@@ -1,14 +1,14 @@
-# Phoenice Agentic Workbench
+# Phoenice Constellation
 
-> ✦ Phoenice · Guided by your North Star
+> ✦ The architect's workbench for the Agentic Era
 
-**Phoenice** is a configuration-driven, LLM-powered agentic AI workbench. Describe a multi-agent workflow in plain English — or assemble it visually — and Phoenice produces a fully deployable, self-contained Python bundle you can ship anywhere.
+**Phoenice Constellation** turns the "manual wiring" of AI into celestial orchestration. By defining agents, MCP tools, and RAG pipelines in a unified framework, developers can move from raw code to shippable Python bundles in minutes, not days.
 
 ---
 
 ## Vision
 
-Transform agentic AI development from manual coding into orchestration. Developers become architects, defining agents, tools, routing, memory, and guardrails in JSON — no graph wiring, no boilerplate.
+Phoenice Constellation is built for the Agentic Era. Developers become architects — defining agents, MCP tools, RAG pipelines, routing, memory, and guardrails in a unified JSON config. No graph wiring. No boilerplate. Just orchestration.
 
 ---
 

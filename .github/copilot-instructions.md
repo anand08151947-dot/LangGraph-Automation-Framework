@@ -81,10 +81,10 @@
 7. Results, logs, STM/LTM, and config are saved to artifacts/.
 8. produce_run_bundle.py can bundle all run artifacts for export.
 9. API endpoints allow querying status, downloading bundles, or inspecting memory.
-# Copilot Instructions for LangGraph-Automation-Framework
+# Copilot Instructions for Phoenice-Constellation
 
 ## Project Overview
-This repository implements a configuration-driven, LLM-powered agentic AI framework. The core idea is to treat workflow orchestration as a config/JSON-driven process, abstracting away manual code wiring. The backend is Python (LangGraph, FastAPI, MCP), and the frontend is React+Vite+TypeScript.
+Phoenice Constellation is the architect's workbench for the Agentic Era. It turns the "manual wiring" of AI into celestial orchestration — by defining agents, MCP tools, and RAG pipelines in a unified framework, developers move from raw code to shippable Python bundles in minutes, not days. The backend is Python (LangGraph, FastAPI, MCP), and the frontend is React+Vite+TypeScript.
 
 ## Architecture & Key Components
 - **backend/**: Core logic for config-driven agent workflows, memory, observability, and tool registry.

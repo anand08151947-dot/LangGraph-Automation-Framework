@@ -1,7 +1,7 @@
-# Phoenice Agentic Workbench — Command Cheatsheet
+# Phoenice Constellation — Command Cheatsheet
 
 Quick-reference for all frequently used PowerShell / CLI commands.  
-All paths assume the repo root is `C:\Anand\AI-WorkSpace\LangGraph-Automation-Framework`.
+All paths assume the repo root is `C:\Anand\AI-WorkSpace\Phoenice-Constellation`.
 
 ---
 
