@@ -122,6 +122,10 @@ const OverviewTab: React.FC<{ health: any; healthError: string | null }> = ({ he
     { icon: 'fa-database',     title: 'State Schema',  desc: 'A shared TypedDict-style object that flows through every node, carrying results and context across the workflow.' },
     { icon: 'fa-shield-halved',title: 'Guardrails',    desc: 'Per-node input/output filters for PII redaction, harmful content blocking, prompt-injection defence, and length limits.' },
     { icon: 'fa-bolt',         title: 'Pre-LLM Pipeline', desc: 'Grounding steps (tool calls + RAG) that run before the LLM to inject relevant context, reducing hallucination.' },
+    { icon: 'fa-circle-check', title: 'Post-LLM Checks', desc: 'Validation rules (required fields, score thresholds), output schema enforcement, and output guardrails run after every LLM call.' },
+    { icon: 'fa-chart-line',   title: 'Observability', desc: 'Trace every node, capture state transitions, and persist agent outputs to LTM — toggled via observability_hooks config.' },
+    { icon: 'fa-memory',       title: 'STM & LTM',     desc: 'Short-term memory (in-process, LRU-evicted at max_entries) and Long-term memory (SQLite, TTL-pruned by ttl_days) built in.' },
+    { icon: 'fa-box-archive',  title: 'Artifact Bundle', desc: 'Every run generates a self-contained deployable bundle: agent.py, requirements.txt, docker-compose.yml, and .env.template.' },
   ];
   return (
     <div className="space-y-6">
@@ -150,12 +154,18 @@ const OverviewTab: React.FC<{ health: any; healthError: string | null }> = ({ he
       </Card>
 
       {/* What is this? */}
-      <Card title="What is this?">
+      <Card title="What is Phoenice?">
         <p className="text-slate-600 leading-relaxed">
-          The <span className="font-semibold text-indigo-700">Agentic AI Workbench</span> is a config-driven, zero-code-wiring framework for building multi-agent LLM pipelines.
+          <span className="font-semibold text-indigo-700">Phoenice Agentic Workbench</span> is a config-driven, zero-code-wiring framework for building multi-agent LLM pipelines.
           You describe agents, tools, routing logic, memory, and guardrails in a single JSON document — the engine assembles and runs the LangGraph state-graph automatically.
-          No manual graph wiring, no boilerplate.  Hot-swap behaviour by editing config.
+          No manual graph wiring, no boilerplate. Hot-swap behaviour by editing config.
         </p>
+        <p className="text-slate-600 leading-relaxed mt-2">
+          <strong>The Workbench produces "apples"</strong> — fully deployable standalone Python bundles (agent.py + requirements.txt + docker-compose.yml + .env.template) that a developer can ship anywhere with <code className="bg-slate-100 px-1 rounded">python agent.py</code>. No handoff required.
+        </p>
+        <div className="mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-xs text-indigo-700">
+          <strong>Tip — Customize a template with LLM:</strong> Go to <strong>Templates</strong>, click <strong>Customize</strong> on any template, and the Translation view opens with the template's JSON pre-loaded. Describe changes in plain English and the LLM refines it. Click <strong>Apply to Builder</strong> to continue building.
+        </div>
       </Card>
 
       {/* Quick Start */}
@@ -299,11 +309,27 @@ approval_required == true`}</pre>
           </ul>
         </div>
         <div>
-          <p className="font-medium text-slate-800 mb-1">memory</p>
+          <p className="font-medium text-slate-800 mb-1">memory — Short-Term (STM)</p>
           <ul className="list-disc list-inside space-y-1 text-slate-600 text-xs">
-            <li><code className="bg-slate-100 px-1 rounded">short_term</code> — <code className="bg-slate-100 px-1 rounded">graph_state</code> (default) or <code className="bg-slate-100 px-1 rounded">redis</code>.</li>
-            <li><code className="bg-slate-100 px-1 rounded">long_term</code> — <code className="bg-slate-100 px-1 rounded">sqlite</code> (default), <code className="bg-slate-100 px-1 rounded">chroma</code>, <code className="bg-slate-100 px-1 rounded">milvus</code>, <code className="bg-slate-100 px-1 rounded">pinecone</code>.</li>
+            <li><code className="bg-slate-100 px-1 rounded">type</code> — <code className="bg-slate-100 px-1 rounded">graph_state</code> (default in-process) or <code className="bg-slate-100 px-1 rounded">redis</code>.</li>
+            <li><code className="bg-slate-100 px-1 rounded">max_entries</code> — max concurrent sessions kept in STM (<code className="bg-slate-100 px-1 rounded">0</code> = unlimited). Oldest session is LRU-evicted when exceeded. Enterprise default: <code className="bg-slate-100 px-1 rounded">200</code>.</li>
           </ul>
+        </div>
+        <div>
+          <p className="font-medium text-slate-800 mb-1">memory — Long-Term (LTM)</p>
+          <ul className="list-disc list-inside space-y-1 text-slate-600 text-xs">
+            <li><code className="bg-slate-100 px-1 rounded">type</code> — <code className="bg-slate-100 px-1 rounded">sqlite</code> (default), <code className="bg-slate-100 px-1 rounded">chroma</code>, <code className="bg-slate-100 px-1 rounded">milvus</code>, <code className="bg-slate-100 px-1 rounded">pinecone</code>.</li>
+            <li><code className="bg-slate-100 px-1 rounded">ttl_days</code> — rows older than N days are auto-pruned after each write (<code className="bg-slate-100 px-1 rounded">0</code> = keep forever). Enterprise default: <code className="bg-slate-100 px-1 rounded">30</code>.</li>
+            <li><code className="bg-slate-100 px-1 rounded">collection</code> — SQLite table / Chroma collection name.</li>
+            <li><code className="bg-slate-100 px-1 rounded">index_fields</code> — fields used to filter/index LTM queries (e.g. <code className="bg-slate-100 px-1 rounded">["task","result","status"]</code>).</li>
+          </ul>
+          <pre className="bg-slate-900 text-emerald-300 text-xs p-3 rounded-lg mt-2">{`"memory": {
+  "short_term": { "type": "graph_state", "max_entries": 200 },
+  "long_term":  {
+    "type": "sqlite", "collection": "my_ltm",
+    "ttl_days": 30, "index_fields": ["task","result"]
+  }
+}`}</pre>
         </div>
       </div>
     ),
@@ -314,9 +340,86 @@ approval_required == true`}</pre>
       <div className="space-y-2">
         <ul className="list-disc list-inside space-y-1 text-slate-600">
           <li><code className="bg-slate-100 px-1 rounded">parallel_execution</code> — groups of node IDs to run concurrently.</li>
-          <li><code className="bg-slate-100 px-1 rounded">retry_policy</code> — <code className="bg-slate-100 px-1 rounded">max_retries</code>, <code className="bg-slate-100 px-1 rounded">backoff_strategy</code> (<code className="bg-slate-100 px-1 rounded">fixed</code>/<code className="bg-slate-100 px-1 rounded">exponential</code>), <code className="bg-slate-100 px-1 rounded">retry_on</code> event list.</li>
+          <li><code className="bg-slate-100 px-1 rounded">retry_policy.max_retries</code> — retry attempts per failed LLM call (default 3).</li>
+          <li><code className="bg-slate-100 px-1 rounded">retry_policy.backoff_strategy</code> — <code className="bg-slate-100 px-1 rounded">fixed</code> or <code className="bg-slate-100 px-1 rounded">exponential</code>.</li>
+          <li><code className="bg-slate-100 px-1 rounded">retry_policy.backoff_base_seconds</code> — base delay; exponential doubles each attempt, capped at 30s.</li>
+          <li><code className="bg-slate-100 px-1 rounded">retry_policy.retry_on</code> — event list e.g. <code className="bg-slate-100 px-1 rounded">["node_error","llm_timeout"]</code>.</li>
+          <li><code className="bg-slate-100 px-1 rounded">observability_hooks</code> — <code className="bg-slate-100 px-1 rounded">trace_nodes</code>, <code className="bg-slate-100 px-1 rounded">log_state_transitions</code>, <code className="bg-slate-100 px-1 rounded">capture_agent_outputs</code> (all boolean).</li>
           <li><code className="bg-slate-100 px-1 rounded">checkpointing.nodes</code> — list of node IDs where state is snapshotted so runs can be resumed.</li>
         </ul>
+      </div>
+    ),
+  },
+  {
+    id: 'postllm', icon: 'fa-circle-check', title: 'Post-LLM Checks',
+    body: (
+      <div className="space-y-3">
+        <p>After the LLM call, each node runs a configurable validation + guardrail pipeline <em>before</em> writing results to state:</p>
+        <div>
+          <p className="font-medium text-slate-800 mb-1">1 · Output Validation (<code className="bg-slate-100 px-1 rounded">validation</code>)</p>
+          <ul className="list-disc list-inside space-y-1 text-slate-600 text-xs">
+            <li>Enforces <code className="bg-slate-100 px-1 rounded">output_schema.format</code> — e.g. if <code className="bg-slate-100 px-1 rounded">"json"</code>, parses the response and fails if malformed.</li>
+            <li><code className="bg-slate-100 px-1 rounded">required_fields</code> — list of keys that must appear in a JSON response.</li>
+            <li><code className="bg-slate-100 px-1 rounded">rules</code> — field-level assertions: <code className="bg-slate-100 px-1 rounded">{'{"field":"score","operator":">=","value":0.5}'}</code>.</li>
+            <li><code className="bg-slate-100 px-1 rounded">on_failure</code> — <code className="bg-slate-100 px-1 rounded">retry</code> (re-calls LLM) · <code className="bg-slate-100 px-1 rounded">error</code> (halts node) · <code className="bg-slate-100 px-1 rounded">warn</code> (logs and continues).</li>
+          </ul>
+        </div>
+        <div>
+          <p className="font-medium text-slate-800 mb-1">2 · Output Guardrails (<code className="bg-slate-100 px-1 rounded">guardrails</code>)</p>
+          <ul className="list-disc list-inside space-y-1 text-slate-600 text-xs">
+            <li><code className="bg-slate-100 px-1 rounded">pii</code> — redacts or blocks PII (email, phone, SSN, credit card, IP) in the LLM response.</li>
+            <li><code className="bg-slate-100 px-1 rounded">harmful_content</code> — blocks responses containing harmful instructions (configurable keyword list).</li>
+            <li><code className="bg-slate-100 px-1 rounded">hate_speech</code> — blocks or redacts hate speech patterns.</li>
+          </ul>
+          <p className="text-xs text-slate-500 mt-1"><strong>Actions per check:</strong> <code className="bg-slate-100 px-1 rounded">block</code> halts execution · <code className="bg-slate-100 px-1 rounded">redact</code> masks content · <code className="bg-slate-100 px-1 rounded">warn</code> logs but passes through.</p>
+        </div>
+        <pre className="bg-slate-900 text-emerald-300 text-xs p-3 rounded-lg overflow-x-auto">{`"guardrails": {
+  "pii":             { "action": "redact" },
+  "harmful_content": { "action": "block"  },
+  "hate_speech":     { "action": "block"  }
+},
+"output_schema": { "format": "json", "state_key": "result" },
+"validation": {
+  "required_fields": ["summary", "score"],
+  "rules": [{ "field": "score", "operator": ">=", "value": 0.5 }],
+  "on_failure": "retry"
+}`}</pre>
+      </div>
+    ),
+  },
+  {
+    id: 'observability', icon: 'fa-chart-line', title: 'Observability & Retry',
+    body: (
+      <div className="space-y-3">
+        <div>
+          <p className="font-medium text-slate-800 mb-1">Observability Hooks (<code className="bg-slate-100 px-1 rounded">observability_hooks</code>)</p>
+          <p className="text-xs text-slate-500 mb-1">Controls what the workbench (and generated artifact) captures during execution:</p>
+          <ul className="list-disc list-inside space-y-1 text-slate-600 text-xs">
+            <li><code className="bg-slate-100 px-1 rounded">trace_nodes: true</code> — emits a trace event at every node entry/exit (inputs + outputs).</li>
+            <li><code className="bg-slate-100 px-1 rounded">log_state_transitions: true</code> — records every state change to the observability log.</li>
+            <li><code className="bg-slate-100 px-1 rounded">capture_agent_outputs: true</code> — persists each agent output to LTM automatically.</li>
+          </ul>
+          <pre className="bg-slate-900 text-emerald-300 text-xs p-3 rounded-lg mt-2">{`"observability_hooks": {
+  "trace_nodes": true,
+  "log_state_transitions": true,
+  "capture_agent_outputs": true
+}`}</pre>
+        </div>
+        <div>
+          <p className="font-medium text-slate-800 mb-1">Retry Policy (<code className="bg-slate-100 px-1 rounded">retry_policy</code>)</p>
+          <ul className="list-disc list-inside space-y-1 text-slate-600 text-xs">
+            <li><code className="bg-slate-100 px-1 rounded">max_retries</code> — how many times to retry a failed LLM call (default: 3).</li>
+            <li><code className="bg-slate-100 px-1 rounded">backoff_strategy</code> — <code className="bg-slate-100 px-1 rounded">fixed</code> (constant delay) or <code className="bg-slate-100 px-1 rounded">exponential</code> (doubles each attempt, capped at 30s).</li>
+            <li><code className="bg-slate-100 px-1 rounded">backoff_base_seconds</code> — base delay in seconds (default 1.0). With exponential: delay = base × 2ⁿ.</li>
+            <li><code className="bg-slate-100 px-1 rounded">retry_on</code> — event types to retry on: <code className="bg-slate-100 px-1 rounded">["node_error","llm_timeout"]</code>.</li>
+          </ul>
+          <pre className="bg-slate-900 text-emerald-300 text-xs p-3 rounded-lg mt-2">{`"retry_policy": {
+  "max_retries": 3,
+  "backoff_strategy": "exponential",
+  "backoff_base_seconds": 1.0,
+  "retry_on": ["node_error", "llm_timeout"]
+}`}</pre>
+        </div>
       </div>
     ),
   },
@@ -404,8 +507,12 @@ const JSON_SCHEMA_SECTIONS: { heading: string; rows: SchemaRow[] }[] = [
   {
     heading: 'Memory',
     rows: [
-      { field: 'memory.short_term', type: 'string', desc: 'graph_state | redis',               example: '"graph_state"' },
-      { field: 'memory.long_term',  type: 'string', desc: 'sqlite | chroma | milvus | pinecone', example: '"sqlite"' },
+      { field: 'memory.short_term.type',         type: 'string',  desc: 'graph_state | redis',                  example: '"graph_state"' },
+      { field: 'memory.short_term.max_entries',  type: 'integer', desc: 'Max STM sessions (0=unlimited, LRU eviction)', example: '200' },
+      { field: 'memory.long_term.type',          type: 'string',  desc: 'sqlite | chroma | milvus | pinecone',  example: '"sqlite"' },
+      { field: 'memory.long_term.ttl_days',      type: 'number',  desc: 'Auto-prune rows older than N days (0=keep forever)', example: '30' },
+      { field: 'memory.long_term.collection',    type: 'string',  desc: 'SQLite table / Chroma collection name', example: '"my_ltm"' },
+      { field: 'memory.long_term.index_fields',  type: 'array',   desc: 'Fields to index in LTM',              example: '["task","result"]' },
     ],
   },
   {
@@ -444,20 +551,31 @@ const JSON_SCHEMA_SECTIONS: { heading: string; rows: SchemaRow[] }[] = [
     ],
   },
   {
-    heading: 'Context Sources',
+    heading: 'Post-LLM (validation & output guardrails)',
     rows: [
-      { field: 'nodes[].context.sources[].type', type: 'string', desc: 'previous_node|stm|ltm|pre_llm', example: '"stm"' },
-      { field: 'nodes[].context.sources[].keys', type: 'array',  desc: 'State keys to pull (stm type)', example: '["task","result"]' },
+      { field: 'nodes[].validation.required_fields', type: 'array',  desc: 'JSON keys that must be present in LLM response', example: '["summary","score"]' },
+      { field: 'nodes[].validation.rules[].field',   type: 'string', desc: 'State/output field to assert on',                example: '"score"' },
+      { field: 'nodes[].validation.rules[].operator',type: 'string', desc: '>=|<=|==|!=|contains',                           example: '">="' },
+      { field: 'nodes[].validation.rules[].value',   type: 'any',    desc: 'Comparison value',                               example: '0.5' },
+      { field: 'nodes[].validation.on_failure',      type: 'string', desc: 'retry|error|warn',                               example: '"retry"' },
+      { field: 'nodes[].guardrails.pii.enabled',             type: 'boolean', desc: 'PII detection on LLM output',   example: 'true' },
+      { field: 'nodes[].guardrails.pii.action',              type: 'string',  desc: 'block|redact|warn',             example: '"redact"' },
+      { field: 'nodes[].guardrails.harmful_content.enabled', type: 'boolean', desc: 'Harmful content filter',        example: 'true' },
+      { field: 'nodes[].guardrails.harmful_content.action',  type: 'string',  desc: 'block|warn',                   example: '"block"' },
+      { field: 'nodes[].guardrails.hate_speech.enabled',     type: 'boolean', desc: 'Hate speech filter',            example: 'true' },
+      { field: 'nodes[].guardrails.hate_speech.action',      type: 'string',  desc: 'block|redact|warn',             example: '"block"' },
     ],
   },
   {
-    heading: 'Guardrails',
+    heading: 'Context Sources & Input Guardrails',
     rows: [
-      { field: 'nodes[].guardrails.pii.enabled',      type: 'boolean', desc: 'PII detection',                    example: 'true' },
-      { field: 'nodes[].guardrails.pii.action',        type: 'string',  desc: 'block|redact|warn',                example: '"redact"' },
-      { field: 'nodes[].guardrails.harmful.enabled',   type: 'boolean', desc: 'Harmful content filter',           example: 'true' },
-      { field: 'nodes[].guardrails.harmful.action',    type: 'string',  desc: 'block|warn',                       example: '"block"' },
-      { field: 'nodes[].context.input_guardrails.context_length.max_chars', type: 'integer', desc: 'Input length limit', example: '4000' },
+      { field: 'nodes[].context.sources[].type', type: 'string', desc: 'previous_node|stm|ltm|pre_llm', example: '"stm"' },
+      { field: 'nodes[].context.sources[].keys', type: 'array',  desc: 'State keys to pull (stm type)', example: '["task","result"]' },
+      { field: 'nodes[].context.synthesis.strategy', type: 'string', desc: 'concatenate|structured|summarize', example: '"structured"' },
+      { field: 'nodes[].context.input_guardrails.pii.action',             type: 'string',  desc: 'block|redact|warn on input PII',         example: '"redact"' },
+      { field: 'nodes[].context.input_guardrails.prompt_injection.action',type: 'string',  desc: 'block|warn on injection patterns',        example: '"block"' },
+      { field: 'nodes[].context.input_guardrails.secrets_detection.action',type: 'string', desc: 'block|redact on API keys/tokens',         example: '"redact"' },
+      { field: 'nodes[].context.input_guardrails.context_length.max_chars', type: 'integer', desc: 'Input length limit (truncate on exceed)', example: '4000' },
     ],
   },
   {
@@ -472,10 +590,15 @@ const JSON_SCHEMA_SECTIONS: { heading: string; rows: SchemaRow[] }[] = [
   {
     heading: 'Advanced',
     rows: [
-      { field: 'retry_policy.max_retries',      type: 'integer', desc: 'Retry attempts',                example: '3' },
-      { field: 'retry_policy.backoff_strategy', type: 'string',  desc: 'fixed | exponential',           example: '"exponential"' },
-      { field: 'parallel_execution',            type: 'array',   desc: 'Groups of node IDs to run concurrently', example: '[["ResearchAgent","CodeAgent"]]' },
-      { field: 'checkpointing.nodes',           type: 'array',   desc: 'Node IDs where state is saved', example: '["HumanApproval"]' },
+      { field: 'retry_policy.max_retries',         type: 'integer', desc: 'Retry attempts',                              example: '3' },
+      { field: 'retry_policy.backoff_strategy',    type: 'string',  desc: 'fixed | exponential',                        example: '"exponential"' },
+      { field: 'retry_policy.backoff_base_seconds',type: 'number',  desc: 'Base delay; exponential doubles each attempt', example: '1.0' },
+      { field: 'retry_policy.retry_on',            type: 'array',   desc: 'Events that trigger retry',                  example: '["node_error","llm_timeout"]' },
+      { field: 'observability_hooks.trace_nodes',          type: 'boolean', desc: 'Emit trace event at each node entry/exit', example: 'true' },
+      { field: 'observability_hooks.log_state_transitions',type: 'boolean', desc: 'Record every state change',           example: 'true' },
+      { field: 'observability_hooks.capture_agent_outputs',type: 'boolean', desc: 'Persist agent output to LTM automatically', example: 'true' },
+      { field: 'parallel_execution',               type: 'array',   desc: 'Groups of node IDs to run concurrently',    example: '[["ResearchAgent","CodeAgent"]]' },
+      { field: 'checkpointing.nodes',              type: 'array',   desc: 'Node IDs where state is saved for resume',  example: '["HumanApproval"]' },
     ],
   },
 ];
@@ -512,15 +635,21 @@ const API_ENDPOINTS = [
   { method: 'POST', path: '/english_to_json',         desc: 'Translate English → workflow JSON (LM Studio)' },
   { method: 'POST', path: '/customize_json_llm',      desc: 'Customize existing JSON with instructions' },
   { method: 'POST', path: '/generate_code',           desc: 'Generate deployable Python from config' },
+  { method: 'GET',  path: '/artifacts',               desc: 'List run artifacts (Export view)' },
+  { method: 'GET',  path: '/artifacts/{run_id}/code', desc: 'Get all generated code files for a run' },
+  { method: 'GET',  path: '/download_bundle/{run_id}',desc: 'Download ZIP bundle of all run artifacts' },
   { method: 'GET',  path: '/templates',               desc: 'List all templates' },
+  { method: 'GET',  path: '/templates/{name}',        desc: 'Get a specific template by name' },
   { method: 'POST', path: '/save_template',           desc: 'Save / version a custom template' },
   { method: 'GET',  path: '/memory/stm/{session}',    desc: 'Read short-term memory' },
   { method: 'GET',  path: '/memory/ltm/{session}',    desc: 'Read long-term memory history' },
   { method: 'POST', path: '/llm/test',                desc: 'Test LLM provider connectivity' },
   { method: 'PUT',  path: '/config/llm',              desc: 'Save LLM provider config' },
+  { method: 'PUT',  path: '/config/rag',              desc: 'Save RAG / vector store config' },
+  { method: 'POST', path: '/config/rag/test',         desc: 'Test RAG provider connectivity' },
+  { method: 'PUT',  path: '/config/observability',    desc: 'Save observability config' },
   { method: 'GET',  path: '/config',                  desc: 'Read current config' },
   { method: 'GET',  path: '/health',                  desc: 'System health check' },
-  { method: 'GET',  path: '/artifacts',               desc: 'List run artifacts' },
 ];
 
 const ApiReferenceTab: React.FC = () => (
@@ -630,6 +759,26 @@ const ExamplesTab: React.FC = () => (
 
 // ─── Troubleshooting ──────────────────────────────────────────────────────────
 const TROUBLESHOOTING = [
+  {
+    id: 'export', title: 'Export view shows "agent.py not generated yet"',
+    body: (
+      <ul className="list-disc list-inside space-y-1 text-slate-600">
+        <li>The run must complete successfully before artifacts appear. Check <strong>Monitor</strong> view for status.</li>
+        <li>If the run completed but the Export tab still shows nothing, the artifact folder may have a file encoding issue. Restart the backend to clear; then re-run the workflow.</li>
+        <li>Ensure the run was triggered via the <strong>Run</strong> tab in Builder (not a manual API call) so code generation is invoked automatically.</li>
+      </ul>
+    ),
+  },
+  {
+    id: 'customize', title: '"Customize" template does not carry through to Translation view',
+    body: (
+      <ul className="list-disc list-inside space-y-1 text-slate-600">
+        <li>This is now fixed. Clicking <strong>Customize</strong> on the Templates page navigates to Translation and pre-populates the right panel with the template's existing JSON and the left panel with a starting instruction.</li>
+        <li>Look for the indigo <em>context banner</em> at the top of the Translation view confirming which template is loaded.</li>
+        <li>After refining with LLM, click <strong>Apply to Builder</strong> to transfer the updated JSON to the Workflow Builder.</li>
+      </ul>
+    ),
+  },
   {
     id: 'lmstudio', title: 'LM Studio not responding',
     body: (
