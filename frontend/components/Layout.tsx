@@ -34,8 +34,12 @@ const Layout: React.FC<LayoutProps> = ({ children, activePath, onNavigate }) => 
               </div>
             )}
             <div className={`transition-opacity ${sidebarOpen ? 'opacity-100' : 'opacity-0 w-0 overflow-hidden'}`}>
-              <span className="font-bold text-white whitespace-nowrap block leading-tight">{branding.appName}</span>
-              <span className="text-[10px] whitespace-nowrap block leading-tight" style={{ color: colors.accentLight }}>{branding.slogan}</span>
+              <span className="font-bold text-white block leading-tight">{branding.appName}</span>
+              <span className="text-[10px] block leading-tight" style={{ color: colors.accentLight }}>
+                {branding.slogan.split('\n').map((line, i) => (
+                  <span key={i}>{line}{i === 0 ? <br /> : null}</span>
+                ))}
+              </span>
             </div>
           </div>
           <button
@@ -94,23 +98,18 @@ const Layout: React.FC<LayoutProps> = ({ children, activePath, onNavigate }) => 
       {/* Main Area */}
       <main className={`flex-1 transition-all duration-300 ${sidebarOpen ? 'ml-64' : 'ml-20'}`}>
         <header className="h-16 bg-white/80 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-8 sticky top-0 z-40">
-          <h2 className="text-lg font-semibold text-slate-800">
-            {NAV_ITEMS.find(n => n.path === activePath)?.label || 'Dashboard'}
-          </h2>
-          <div className="flex items-center gap-4">
-            <button className="text-slate-500 hover:text-slate-800 relative p-2">
-              <i className="fas fa-bell"></i>
-              <span className="absolute top-1 right-1 w-2 h-2 bg-rose-500 rounded-full"></span>
-            </button>
-            <button className="text-slate-500 hover:text-slate-800 p-2">
-              <i className="fas fa-search"></i>
-            </button>
-            <div className="h-8 w-[1px] bg-slate-200 mx-2"></div>
-            <button className="text-sm font-medium text-slate-600 transition-colors" style={{ color: undefined }}
-              onMouseEnter={e => (e.currentTarget.style.color = colors.accent)}
-              onMouseLeave={e => (e.currentTarget.style.color = '')}
+          <div>
+            <h2 className="text-lg font-semibold text-slate-800">
+              {NAV_ITEMS.find(n => n.path === activePath)?.label || 'Dashboard'}
+            </h2>
+            <p className="text-[10px] text-slate-400 leading-none mt-0.5 font-medium">{branding.tagline}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => onNavigate('/docs')}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-800 text-xs font-medium transition-colors"
             >
-              Support
+              <i className="fas fa-circle-question"></i> Help & Docs
             </button>
           </div>
         </header>

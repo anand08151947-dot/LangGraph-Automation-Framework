@@ -5,9 +5,10 @@
 
 const branding = {
   // App identity
-  appName: 'Agentic Workbench',
-  appFullName: 'Agentic AI Workbench',
-  slogan: 'Orchestrate Intelligence, Automate Everything',
+  appName: 'Phoenice',
+  appFullName: 'Phoenice Agentic Workbench',
+  slogan: 'Orchestrate Intelligence,\nAutomate Everything',
+  tagline: '✦ Phoenice · Guided by your North Star',
   version: '1.0.0',
 
   // Logo — set logoUrl to an image path (e.g. '/logo.svg') or leave empty to use the icon
@@ -35,14 +36,14 @@ const branding = {
   },
 
   // Page title shown in browser tab
-  pageTitle: 'Agentic AI Workbench',
+  pageTitle: 'Phoenice Agentic Workbench',
 
   // Dashboard hero
   heroWelcome: (name: string) => `Welcome back, ${name}!`,
   heroSubtitle: 'Ready to deploy your next intelligent agent? Use the visual builder or let AI generate your JSON workflow config.',
 
   // Footer text
-  footer: '✦ Agentic Workbench · Orchestrate Intelligence, Automate Everything',
+  footer: '✦ Phoenice · Guided by your North Star',
 };
 
 export default branding;
