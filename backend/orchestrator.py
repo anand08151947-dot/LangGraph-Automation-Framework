@@ -11,6 +11,7 @@ Features:
 - Return final state as a JSON-serializable dict
 """
 
+import math
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -35,10 +36,18 @@ def _build_memory_manager(memory_cfg: dict) -> MemoryManager:
         return MemoryManager()
     stm = memory_cfg.get("short_term", {})
     ltm = memory_cfg.get("long_term", {})
-    stm_backend = stm.get("backend", "memory") if isinstance(stm, dict) else "memory"
-    ltm_backend = ltm.get("backend", "sqlite") if isinstance(ltm, dict) else "sqlite"
+    stm_backend = stm.get("type", stm.get("backend", "memory")) if isinstance(stm, dict) else "memory"
+    ltm_backend = ltm.get("type", ltm.get("backend", "sqlite")) if isinstance(ltm, dict) else "sqlite"
     ltm_path = ltm.get("path", "ltm.db") if isinstance(ltm, dict) else "ltm.db"
-    return MemoryManager(stm_backend=stm_backend, ltm_backend=ltm_backend, ltm_path=ltm_path)
+    max_stm_entries = int(stm.get("max_entries", 0)) if isinstance(stm, dict) else 0
+    ltm_ttl_days = float(ltm.get("ttl_days", 0)) if isinstance(ltm, dict) else 0
+    return MemoryManager(
+        stm_backend=stm_backend,
+        ltm_backend=ltm_backend,
+        ltm_path=ltm_path,
+        max_stm_entries=max_stm_entries,
+        ltm_ttl_days=ltm_ttl_days,
+    )
 
 
 class Orchestrator:
@@ -75,12 +84,29 @@ class Orchestrator:
         """
         # ── ORC-1: Config-driven managers ─────────────────────────────
         memory_cfg = config_json.get("memory", {})
-        obs_hooks = config_json.get("observability_hooks", ["logging"])
         runtime_cfg = config_json.get("runtime", {})
+        retry_policy = config_json.get("retry_policy", {})
+
+        # ORC-5: Parse observability_hooks — supports both dict and legacy list form
+        obs_hooks_raw = config_json.get("observability_hooks", {})
+        if isinstance(obs_hooks_raw, dict):
+            obs_cfg = obs_hooks_raw
+            obs_backends = ["logging"]
+        else:
+            obs_cfg = {}
+            obs_backends = obs_hooks_raw if isinstance(obs_hooks_raw, list) and obs_hooks_raw else ["logging"]
+        _obs_trace_nodes = obs_cfg.get("trace_nodes", True)
+        _obs_log_transitions = obs_cfg.get("log_state_transitions", True)
+        _obs_capture_outputs = obs_cfg.get("capture_agent_outputs", True)
+
+        # ORC-4: Retry / backoff configuration from retry_policy
+        max_retries_cfg = int(retry_policy.get("max_retries", self.max_retries))
+        backoff_strategy = retry_policy.get("backoff_strategy", "fixed")
+        backoff_base = float(retry_policy.get("backoff_base_seconds", 1.0))
 
         # Build per-run MemoryManager from config (fall back to instance default)
         memory_manager = _build_memory_manager(memory_cfg) if memory_cfg else self.memory_manager
-        observability = ObservabilityManager(obs_hooks)
+        observability = ObservabilityManager(obs_backends)
 
         # ── ORC-2: Build graph (pass session_id through) ───────────────
         graph = self.factory.build_from_config(config_json, session_id=session_id)
@@ -152,16 +178,17 @@ class Orchestrator:
                             "state": last_state,
                         })
 
-                        # Log the agent action
-                        observability.log_event("agent_action", {
-                            "step_idx": step_idx,
-                            "sender": sender,
-                            "messages": last_state.get("messages", []),
-                            "metadata": last_state.get("metadata", {}),
-                        })
+                        # ORC-5: Log state transition (conditional)
+                        if _obs_log_transitions:
+                            observability.log_event("agent_action", {
+                                "step_idx": step_idx,
+                                "sender": sender,
+                                "messages": last_state.get("messages", []),
+                                "metadata": last_state.get("metadata", {}),
+                            })
 
-                        # Trace the step (if session tracking is enabled)
-                        if session_id:
+                        # ORC-5: Trace the step (conditional on trace_nodes)
+                        if _obs_trace_nodes and session_id:
                             observability.trace_step(session_id, {
                                 "step_idx": step_idx,
                                 "sender": sender,
@@ -169,11 +196,12 @@ class Orchestrator:
                                 "metadata": last_state.get("metadata", {}),
                             })
 
-                        # Record step metric
-                        observability.record_metric(
-                            "step_executed", 1,
-                            {"step_idx": step_idx, "sender": sender},
-                        )
+                        # ORC-5: Capture agent outputs (conditional)
+                        if _obs_capture_outputs:
+                            observability.record_metric(
+                                "step_executed", 1,
+                                {"step_idx": step_idx, "sender": sender},
+                            )
 
                         # ORC-3: capture end time and compute duration
                         step_end = time.time()
@@ -221,8 +249,14 @@ class Orchestrator:
                             "retry": retry_count,
                         })
                         retry_count += 1
-                        if retry_count > self.max_retries:
+                        if retry_count > max_retries_cfg:
                             raise  # abort after max retries
+                        # ORC-4: Backoff sleep before retry (fixed or exponential)
+                        if backoff_strategy == "exponential":
+                            sleep_s = backoff_base * math.pow(2, retry_count - 1)
+                        else:
+                            sleep_s = backoff_base
+                        time.sleep(min(sleep_s, 30.0))  # cap at 30s
 
                 step_idx += 1
 

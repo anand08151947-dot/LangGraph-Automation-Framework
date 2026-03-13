@@ -15,14 +15,30 @@
         }
       },
       "memory": {
-        "short_term": { "type": "graph_state" },
-        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "enterprise_memory" }
+        "short_term": {
+          "type": "graph_state",
+          "max_entries": 200
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "enterprise_memory",
+          "ttl_days": 30,
+          "index_fields": [
+            "task",
+            "result",
+            "status"
+          ]
+        }
       },
       "mcp_servers": {
         "github_tools": {
           "type": "stdio",
           "command": "npx",
-          "args": ["-y", "@modelcontextprotocol/server-github"]
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-github"
+          ]
         },
         "web_search": {
           "type": "http",
@@ -48,32 +64,51 @@
           "type": "agent",
           "system_prompt": "Decide which specialized agent should execute the task based on the current state. Route to ResearchAgent for research tasks, CodeAgent for code tasks, DataAgent for data tasks.",
           "routing_logic": [
-            { "condition": "task == 'research'", "next": "ResearchAgent" },
-            { "condition": "task == 'code'", "next": "CodeAgent" },
-            { "condition": "task == 'data'", "next": "DataAgent" }
+            {
+              "condition": "task == 'research'",
+              "next": "ResearchAgent"
+            },
+            {
+              "condition": "task == 'code'",
+              "next": "CodeAgent"
+            },
+            {
+              "condition": "task == 'data'",
+              "next": "DataAgent"
+            }
           ]
         },
         {
           "id": "ResearchAgent",
           "type": "agent",
           "system_prompt": "Search the web and gather relevant information for the task. Update confidence_score based on result quality. Set missing_data=true if key information is unavailable.",
-          "tools": ["web_search"],
-          "memory_access": ["long_term"],
+          "tools": [
+            "web_search"
+          ],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "ReflectionAgent"
         },
         {
           "id": "CodeAgent",
           "type": "agent",
           "system_prompt": "Write, review, or debug code as required by the task. Use github_tools to read existing repos or push changes. Update confidence_score based on code quality.",
-          "tools": ["github_tools"],
-          "memory_access": ["long_term"],
+          "tools": [
+            "github_tools"
+          ],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "TestRunner"
         },
         {
           "id": "DataAgent",
           "type": "agent",
           "system_prompt": "Process, transform, and analyze data as required. Retrieve relevant context from long-term memory. Update confidence_score based on data completeness.",
-          "memory_access": ["long_term"],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "ReflectionAgent"
         },
         {
@@ -87,10 +122,22 @@
           "type": "agent",
           "system_prompt": "Critically evaluate the output produced so far. Check for missing data, low confidence, or excessive retries. Update state variables to guide the next routing decision.",
           "routing_logic": [
-            { "condition": "missing_data == true", "next": "ResearchAgent" },
-            { "condition": "confidence_score < 0.7", "next": "Supervisor" },
-            { "condition": "retry_count > 3", "next": "HumanApproval" },
-            { "condition": "confidence_score >= 0.7", "next": "ResultAggregator" }
+            {
+              "condition": "missing_data == true",
+              "next": "ResearchAgent"
+            },
+            {
+              "condition": "confidence_score < 0.7",
+              "next": "Supervisor"
+            },
+            {
+              "condition": "retry_count > 3",
+              "next": "HumanApproval"
+            },
+            {
+              "condition": "confidence_score >= 0.7",
+              "next": "ResultAggregator"
+            }
           ]
         },
         {
@@ -103,8 +150,14 @@
           "id": "ApprovalGate",
           "type": "conditional",
           "routing_logic": [
-            { "condition": "approval_required == true", "next": "HumanApproval" },
-            { "condition": "approval_required == false", "next": "Executor" }
+            {
+              "condition": "approval_required == true",
+              "next": "HumanApproval"
+            },
+            {
+              "condition": "approval_required == false",
+              "next": "Executor"
+            }
           ]
         },
         {
@@ -122,26 +175,95 @@
         }
       ],
       "edges": [
-        { "from": "Planner", "to": "Supervisor" },
-        { "from": "ResearchAgent", "to": "ReflectionAgent" },
-        { "from": "CodeAgent", "to": "TestRunner" },
-        { "from": "TestRunner", "to": "ReflectionAgent" },
-        { "from": "DataAgent", "to": "ReflectionAgent" },
-        { "from": "ReflectionAgent", "to": "ResearchAgent", "condition": "missing_data == true" },
-        { "from": "ReflectionAgent", "to": "Supervisor", "condition": "confidence_score < 0.7" },
-        { "from": "ReflectionAgent", "to": "HumanApproval", "condition": "retry_count > 3" },
-        { "from": "ReflectionAgent", "to": "ResultAggregator", "condition": "confidence_score >= 0.7" },
-        { "from": "ResultAggregator", "to": "ApprovalGate" },
-        { "from": "ApprovalGate", "to": "HumanApproval", "condition": "approval_required == true" },
-        { "from": "ApprovalGate", "to": "Executor", "condition": "approval_required == false" },
-        { "from": "HumanApproval", "to": "Executor" },
-        { "from": "Executor", "to": "END" }
+        {
+          "from": "Planner",
+          "to": "Supervisor"
+        },
+        {
+          "from": "ResearchAgent",
+          "to": "ReflectionAgent"
+        },
+        {
+          "from": "CodeAgent",
+          "to": "TestRunner"
+        },
+        {
+          "from": "TestRunner",
+          "to": "ReflectionAgent"
+        },
+        {
+          "from": "DataAgent",
+          "to": "ReflectionAgent"
+        },
+        {
+          "from": "ReflectionAgent",
+          "to": "ResearchAgent",
+          "condition": "missing_data == true"
+        },
+        {
+          "from": "ReflectionAgent",
+          "to": "Supervisor",
+          "condition": "confidence_score < 0.7"
+        },
+        {
+          "from": "ReflectionAgent",
+          "to": "HumanApproval",
+          "condition": "retry_count > 3"
+        },
+        {
+          "from": "ReflectionAgent",
+          "to": "ResultAggregator",
+          "condition": "confidence_score >= 0.7"
+        },
+        {
+          "from": "ResultAggregator",
+          "to": "ApprovalGate"
+        },
+        {
+          "from": "ApprovalGate",
+          "to": "HumanApproval",
+          "condition": "approval_required == true"
+        },
+        {
+          "from": "ApprovalGate",
+          "to": "Executor",
+          "condition": "approval_required == false"
+        },
+        {
+          "from": "HumanApproval",
+          "to": "Executor"
+        },
+        {
+          "from": "Executor",
+          "to": "END"
+        }
       ],
       "parallel_execution": [
-        { "group": "analysis_agents", "nodes": ["ResearchAgent", "DataAgent"] }
+        {
+          "group": "analysis_agents",
+          "nodes": [
+            "ResearchAgent",
+            "DataAgent"
+          ]
+        }
       ],
-      "retry_policy": { "max_retries": 3, "increment_state": "retry_count" },
-      "checkpointing": { "enabled": true, "nodes": ["HumanApproval", "ReflectionAgent"] },
+      "retry_policy": {
+        "max_retries": 3,
+        "increment_state": "retry_count",
+        "backoff_strategy": "exponential",
+        "backoff_base_seconds": 1.0,
+        "retry_on": [
+          "node_error",
+          "llm_timeout"
+        ]
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": [
+          "HumanApproval",
+          "ReflectionAgent"
+        ]
+      },
       "observability_hooks": {
         "trace_nodes": true,
         "log_state_transitions": true,
@@ -149,7 +271,6 @@
       }
     }
   },
-
   {
     "use_case": "Research & Content Generation Pipeline",
     "description": "A two-phase pipeline: a ResearchAgent gathers web content, a WriterAgent drafts the output, and a ReviewerAgent scores quality. If the score is too low the writer iterates; above threshold it is published. Demonstrates iterative refinement and quality-gated publishing.",
@@ -160,14 +281,33 @@
       "runtime": {
         "max_iterations": 15,
         "checkpoint_store": "sqlite",
-        "observability": { "tracing": true, "provider": "logging" }
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
       },
       "memory": {
-        "short_term": { "type": "graph_state" },
-        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "content_memory" }
+        "short_term": {
+          "type": "graph_state",
+          "max_entries": 200
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "content_memory",
+          "ttl_days": 30,
+          "index_fields": [
+            "task",
+            "result",
+            "status"
+          ]
+        }
       },
       "mcp_servers": {
-        "web_search": { "type": "http", "endpoint": "https://api.search.example" }
+        "web_search": {
+          "type": "http",
+          "endpoint": "https://api.search.example"
+        }
       },
       "state_schema": {
         "topic": "string",
@@ -182,8 +322,12 @@
           "id": "ResearchAgent",
           "type": "agent",
           "system_prompt": "Search the web for information about the given topic. Compile key facts, statistics, and quotes into research_notes. Be thorough and cite sources.",
-          "tools": ["web_search"],
-          "memory_access": ["long_term"],
+          "tools": [
+            "web_search"
+          ],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "WriterAgent"
         },
         {
@@ -195,11 +339,20 @@
         {
           "id": "ReviewerAgent",
           "type": "agent",
-          "system_prompt": "Evaluate the draft on accuracy, clarity, engagement, and SEO. Score it 0.0–1.0 and store in quality_score. Provide specific improvement notes. If quality_score >= 0.8, set published=true.",
+          "system_prompt": "Evaluate the draft on accuracy, clarity, engagement, and SEO. Score it 0.0\u00e2\u20ac\u201c1.0 and store in quality_score. Provide specific improvement notes. If quality_score >= 0.8, set published=true.",
           "routing_logic": [
-            { "condition": "quality_score >= 0.8", "next": "Publisher" },
-            { "condition": "revision_count >= 3", "next": "Publisher" },
-            { "condition": "quality_score < 0.8", "next": "WriterAgent" }
+            {
+              "condition": "quality_score >= 0.8",
+              "next": "Publisher"
+            },
+            {
+              "condition": "revision_count >= 3",
+              "next": "Publisher"
+            },
+            {
+              "condition": "quality_score < 0.8",
+              "next": "WriterAgent"
+            }
           ]
         },
         {
@@ -210,14 +363,45 @@
         }
       ],
       "edges": [
-        { "from": "ResearchAgent", "to": "WriterAgent" },
-        { "from": "WriterAgent", "to": "ReviewerAgent" },
-        { "from": "ReviewerAgent", "to": "WriterAgent", "condition": "quality_score < 0.8" },
-        { "from": "ReviewerAgent", "to": "Publisher", "condition": "quality_score >= 0.8" },
-        { "from": "Publisher", "to": "END" }
+        {
+          "from": "ResearchAgent",
+          "to": "WriterAgent"
+        },
+        {
+          "from": "WriterAgent",
+          "to": "ReviewerAgent"
+        },
+        {
+          "from": "ReviewerAgent",
+          "to": "WriterAgent",
+          "condition": "quality_score < 0.8"
+        },
+        {
+          "from": "ReviewerAgent",
+          "to": "Publisher",
+          "condition": "quality_score >= 0.8"
+        },
+        {
+          "from": "Publisher",
+          "to": "END"
+        }
       ],
-      "retry_policy": { "max_retries": 3, "increment_state": "revision_count" },
-      "checkpointing": { "enabled": true, "nodes": ["ReviewerAgent"] },
+      "retry_policy": {
+        "max_retries": 3,
+        "increment_state": "revision_count",
+        "backoff_strategy": "exponential",
+        "backoff_base_seconds": 1.0,
+        "retry_on": [
+          "node_error",
+          "llm_timeout"
+        ]
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": [
+          "ReviewerAgent"
+        ]
+      },
       "observability_hooks": {
         "trace_nodes": true,
         "log_state_transitions": true,
@@ -225,7 +409,6 @@
       }
     }
   },
-
   {
     "use_case": "CI/CD Automation & Code Review Pipeline",
     "description": "Automates code review, testing, and deployment. A CodeReviewer analyses the diff, a TestRunner executes tests, a SecurityScanner checks vulnerabilities, and a DeploymentGate either auto-deploys or escalates to human approval based on scan results.",
@@ -236,17 +419,36 @@
       "runtime": {
         "max_iterations": 10,
         "checkpoint_store": "sqlite",
-        "observability": { "tracing": true, "provider": "logging" }
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
       },
       "memory": {
-        "short_term": { "type": "graph_state" },
-        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "cicd_memory" }
+        "short_term": {
+          "type": "graph_state",
+          "max_entries": 200
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "cicd_memory",
+          "ttl_days": 30,
+          "index_fields": [
+            "task",
+            "result",
+            "status"
+          ]
+        }
       },
       "mcp_servers": {
         "github_tools": {
           "type": "stdio",
           "command": "npx",
-          "args": ["-y", "@modelcontextprotocol/server-github"]
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-github"
+          ]
         }
       },
       "state_schema": {
@@ -263,23 +465,35 @@
           "id": "CodeReviewer",
           "type": "agent",
           "system_prompt": "Review the pull request diff from the GitHub repo. Check for code quality, design patterns, and logical correctness. Set review_passed=true if acceptable, false if changes required.",
-          "tools": ["github_tools"],
-          "memory_access": ["long_term"],
+          "tools": [
+            "github_tools"
+          ],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "ReviewGate"
         },
         {
           "id": "ReviewGate",
           "type": "conditional",
           "routing_logic": [
-            { "condition": "review_passed == true", "next": "TestRunner" },
-            { "condition": "review_passed == false", "next": "FeedbackAgent" }
+            {
+              "condition": "review_passed == true",
+              "next": "TestRunner"
+            },
+            {
+              "condition": "review_passed == false",
+              "next": "FeedbackAgent"
+            }
           ]
         },
         {
           "id": "FeedbackAgent",
           "type": "agent",
           "system_prompt": "Post detailed review feedback as a GitHub PR comment. List all required changes clearly.",
-          "tools": ["github_tools"],
+          "tools": [
+            "github_tools"
+          ],
           "next": "END"
         },
         {
@@ -292,11 +506,22 @@
           "id": "SecurityScanner",
           "type": "agent",
           "system_prompt": "Run SAST/DAST security checks on the codebase. Count vulnerabilities and store in security_issues. Critical issues (security_issues > 0) block deployment.",
-          "tools": ["github_tools"],
+          "tools": [
+            "github_tools"
+          ],
           "routing_logic": [
-            { "condition": "security_issues > 0", "next": "HumanApproval" },
-            { "condition": "tests_passed == false", "next": "HumanApproval" },
-            { "condition": "security_issues == 0", "next": "Deployer" }
+            {
+              "condition": "security_issues > 0",
+              "next": "HumanApproval"
+            },
+            {
+              "condition": "tests_passed == false",
+              "next": "HumanApproval"
+            },
+            {
+              "condition": "security_issues == 0",
+              "next": "Deployer"
+            }
           ]
         },
         {
@@ -310,22 +535,67 @@
           "id": "Deployer",
           "type": "agent",
           "system_prompt": "Deploy the approved code to the target environment. Tag the release, update changelogs, and notify the team.",
-          "tools": ["github_tools"],
+          "tools": [
+            "github_tools"
+          ],
           "next": "END"
         }
       ],
       "edges": [
-        { "from": "CodeReviewer", "to": "ReviewGate" },
-        { "from": "ReviewGate", "to": "TestRunner", "condition": "review_passed == true" },
-        { "from": "ReviewGate", "to": "FeedbackAgent", "condition": "review_passed == false" },
-        { "from": "TestRunner", "to": "SecurityScanner" },
-        { "from": "SecurityScanner", "to": "HumanApproval", "condition": "security_issues > 0" },
-        { "from": "SecurityScanner", "to": "Deployer", "condition": "security_issues == 0" },
-        { "from": "HumanApproval", "to": "Deployer" },
-        { "from": "Deployer", "to": "END" }
+        {
+          "from": "CodeReviewer",
+          "to": "ReviewGate"
+        },
+        {
+          "from": "ReviewGate",
+          "to": "TestRunner",
+          "condition": "review_passed == true"
+        },
+        {
+          "from": "ReviewGate",
+          "to": "FeedbackAgent",
+          "condition": "review_passed == false"
+        },
+        {
+          "from": "TestRunner",
+          "to": "SecurityScanner"
+        },
+        {
+          "from": "SecurityScanner",
+          "to": "HumanApproval",
+          "condition": "security_issues > 0"
+        },
+        {
+          "from": "SecurityScanner",
+          "to": "Deployer",
+          "condition": "security_issues == 0"
+        },
+        {
+          "from": "HumanApproval",
+          "to": "Deployer"
+        },
+        {
+          "from": "Deployer",
+          "to": "END"
+        }
       ],
-      "retry_policy": { "max_retries": 2, "increment_state": "retry_count" },
-      "checkpointing": { "enabled": true, "nodes": ["HumanApproval", "SecurityScanner"] },
+      "retry_policy": {
+        "max_retries": 3,
+        "increment_state": "retry_count",
+        "backoff_strategy": "exponential",
+        "backoff_base_seconds": 1.0,
+        "retry_on": [
+          "node_error",
+          "llm_timeout"
+        ]
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": [
+          "HumanApproval",
+          "SecurityScanner"
+        ]
+      },
       "observability_hooks": {
         "trace_nodes": true,
         "log_state_transitions": true,
@@ -333,7 +603,6 @@
       }
     }
   },
-
   {
     "use_case": "Customer Support Triage & Resolution",
     "description": "Routes customer tickets to the right specialist agent (billing, technical, or general). Agents attempt resolution and escalate to a human if they cannot solve within retry limits. Demonstrates supervisor-style routing, escalation, and retry state tracking.",
@@ -344,11 +613,27 @@
       "runtime": {
         "max_iterations": 12,
         "checkpoint_store": "sqlite",
-        "observability": { "tracing": true, "provider": "logging" }
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
       },
       "memory": {
-        "short_term": { "type": "graph_state" },
-        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "support_history" }
+        "short_term": {
+          "type": "graph_state",
+          "max_entries": 200
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "support_history",
+          "ttl_days": 30,
+          "index_fields": [
+            "task",
+            "result",
+            "status"
+          ]
+        }
       },
       "state_schema": {
         "ticket_id": "string",
@@ -370,39 +655,63 @@
           "id": "Router",
           "type": "conditional",
           "routing_logic": [
-            { "condition": "category == 'billing'", "next": "BillingAgent" },
-            { "condition": "category == 'technical'", "next": "TechnicalAgent" },
-            { "condition": "category == 'general'", "next": "GeneralAgent" }
+            {
+              "condition": "category == 'billing'",
+              "next": "BillingAgent"
+            },
+            {
+              "condition": "category == 'technical'",
+              "next": "TechnicalAgent"
+            },
+            {
+              "condition": "category == 'general'",
+              "next": "GeneralAgent"
+            }
           ]
         },
         {
           "id": "BillingAgent",
           "type": "agent",
           "system_prompt": "Handle billing-related support tickets. Check account status, resolve payment issues, apply credits. Set resolved=true and write resolution_notes if resolved.",
-          "memory_access": ["long_term"],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "ResolutionCheck"
         },
         {
           "id": "TechnicalAgent",
           "type": "agent",
           "system_prompt": "Troubleshoot and resolve technical support issues. Provide step-by-step instructions, log diagnostic info. Set resolved=true and write resolution_notes if resolved.",
-          "memory_access": ["long_term"],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "ResolutionCheck"
         },
         {
           "id": "GeneralAgent",
           "type": "agent",
           "system_prompt": "Handle general inquiries and provide helpful responses. Answer FAQs, provide documentation links. Set resolved=true and write resolution_notes if resolved.",
-          "memory_access": ["long_term"],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "ResolutionCheck"
         },
         {
           "id": "ResolutionCheck",
           "type": "conditional",
           "routing_logic": [
-            { "condition": "resolved == true", "next": "SatisfactionSurvey" },
-            { "condition": "retry_count >= 2", "next": "HumanEscalation" },
-            { "condition": "resolved == false", "next": "Router" }
+            {
+              "condition": "resolved == true",
+              "next": "SatisfactionSurvey"
+            },
+            {
+              "condition": "retry_count >= 2",
+              "next": "HumanEscalation"
+            },
+            {
+              "condition": "resolved == false",
+              "next": "Router"
+            }
           ]
         },
         {
@@ -420,21 +729,78 @@
         }
       ],
       "edges": [
-        { "from": "Classifier", "to": "Router" },
-        { "from": "Router", "to": "BillingAgent", "condition": "category == 'billing'" },
-        { "from": "Router", "to": "TechnicalAgent", "condition": "category == 'technical'" },
-        { "from": "Router", "to": "GeneralAgent", "condition": "category == 'general'" },
-        { "from": "BillingAgent", "to": "ResolutionCheck" },
-        { "from": "TechnicalAgent", "to": "ResolutionCheck" },
-        { "from": "GeneralAgent", "to": "ResolutionCheck" },
-        { "from": "ResolutionCheck", "to": "SatisfactionSurvey", "condition": "resolved == true" },
-        { "from": "ResolutionCheck", "to": "HumanEscalation", "condition": "retry_count >= 2" },
-        { "from": "ResolutionCheck", "to": "Router", "condition": "resolved == false" },
-        { "from": "HumanEscalation", "to": "SatisfactionSurvey" },
-        { "from": "SatisfactionSurvey", "to": "END" }
+        {
+          "from": "Classifier",
+          "to": "Router"
+        },
+        {
+          "from": "Router",
+          "to": "BillingAgent",
+          "condition": "category == 'billing'"
+        },
+        {
+          "from": "Router",
+          "to": "TechnicalAgent",
+          "condition": "category == 'technical'"
+        },
+        {
+          "from": "Router",
+          "to": "GeneralAgent",
+          "condition": "category == 'general'"
+        },
+        {
+          "from": "BillingAgent",
+          "to": "ResolutionCheck"
+        },
+        {
+          "from": "TechnicalAgent",
+          "to": "ResolutionCheck"
+        },
+        {
+          "from": "GeneralAgent",
+          "to": "ResolutionCheck"
+        },
+        {
+          "from": "ResolutionCheck",
+          "to": "SatisfactionSurvey",
+          "condition": "resolved == true"
+        },
+        {
+          "from": "ResolutionCheck",
+          "to": "HumanEscalation",
+          "condition": "retry_count >= 2"
+        },
+        {
+          "from": "ResolutionCheck",
+          "to": "Router",
+          "condition": "resolved == false"
+        },
+        {
+          "from": "HumanEscalation",
+          "to": "SatisfactionSurvey"
+        },
+        {
+          "from": "SatisfactionSurvey",
+          "to": "END"
+        }
       ],
-      "retry_policy": { "max_retries": 2, "increment_state": "retry_count" },
-      "checkpointing": { "enabled": true, "nodes": ["HumanEscalation", "ResolutionCheck"] },
+      "retry_policy": {
+        "max_retries": 3,
+        "increment_state": "retry_count",
+        "backoff_strategy": "exponential",
+        "backoff_base_seconds": 1.0,
+        "retry_on": [
+          "node_error",
+          "llm_timeout"
+        ]
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": [
+          "HumanEscalation",
+          "ResolutionCheck"
+        ]
+      },
       "observability_hooks": {
         "trace_nodes": true,
         "log_state_transitions": true,
@@ -442,7 +808,6 @@
       }
     }
   },
-
   {
     "use_case": "Data Ingestion & Analytics Pipeline",
     "description": "An ETL-style agentic pipeline: ingests raw data, validates schema and quality, transforms and enriches it, runs analytics, and produces a report. Demonstrates sequential linear flow with quality gates and a reporting step.",
@@ -453,11 +818,27 @@
       "runtime": {
         "max_iterations": 10,
         "checkpoint_store": "sqlite",
-        "observability": { "tracing": true, "provider": "logging" }
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
       },
       "memory": {
-        "short_term": { "type": "graph_state" },
-        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "analytics_results" }
+        "short_term": {
+          "type": "graph_state",
+          "max_entries": 200
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "analytics_results",
+          "ttl_days": 30,
+          "index_fields": [
+            "task",
+            "result",
+            "status"
+          ]
+        }
       },
       "state_schema": {
         "data_source": "string",
@@ -472,7 +853,9 @@
           "id": "DataIngestor",
           "type": "agent",
           "system_prompt": "Connect to the specified data_source and load the raw data. Count the records and store in record_count. Handle connection errors gracefully.",
-          "memory_access": ["long_term"],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "DataValidator"
         },
         {
@@ -480,8 +863,14 @@
           "type": "agent",
           "system_prompt": "Validate the ingested data against the expected schema. Count missing, null, or malformed records and store in error_count. Set validation_passed=true if error_count is within acceptable threshold.",
           "routing_logic": [
-            { "condition": "validation_passed == true", "next": "DataTransformer" },
-            { "condition": "validation_passed == false", "next": "DataCleaner" }
+            {
+              "condition": "validation_passed == true",
+              "next": "DataTransformer"
+            },
+            {
+              "condition": "validation_passed == false",
+              "next": "DataCleaner"
+            }
           ]
         },
         {
@@ -494,14 +883,18 @@
           "id": "DataTransformer",
           "type": "agent",
           "system_prompt": "Transform, normalize, and enrich the validated data. Apply business rules and join with reference data. Store the transformed dataset in long-term memory.",
-          "memory_access": ["long_term"],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "AnalyticsEngine"
         },
         {
           "id": "AnalyticsEngine",
           "type": "agent",
           "system_prompt": "Run statistical analysis and generate insights from the transformed data. Identify trends, anomalies, and key metrics. Store narrative insights in the 'insights' state variable.",
-          "memory_access": ["long_term"],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "ReportGenerator"
         },
         {
@@ -512,16 +905,54 @@
         }
       ],
       "edges": [
-        { "from": "DataIngestor", "to": "DataValidator" },
-        { "from": "DataValidator", "to": "DataTransformer", "condition": "validation_passed == true" },
-        { "from": "DataValidator", "to": "DataCleaner", "condition": "validation_passed == false" },
-        { "from": "DataCleaner", "to": "DataTransformer" },
-        { "from": "DataTransformer", "to": "AnalyticsEngine" },
-        { "from": "AnalyticsEngine", "to": "ReportGenerator" },
-        { "from": "ReportGenerator", "to": "END" }
+        {
+          "from": "DataIngestor",
+          "to": "DataValidator"
+        },
+        {
+          "from": "DataValidator",
+          "to": "DataTransformer",
+          "condition": "validation_passed == true"
+        },
+        {
+          "from": "DataValidator",
+          "to": "DataCleaner",
+          "condition": "validation_passed == false"
+        },
+        {
+          "from": "DataCleaner",
+          "to": "DataTransformer"
+        },
+        {
+          "from": "DataTransformer",
+          "to": "AnalyticsEngine"
+        },
+        {
+          "from": "AnalyticsEngine",
+          "to": "ReportGenerator"
+        },
+        {
+          "from": "ReportGenerator",
+          "to": "END"
+        }
       ],
-      "retry_policy": { "max_retries": 2, "increment_state": "error_count" },
-      "checkpointing": { "enabled": true, "nodes": ["DataValidator", "AnalyticsEngine"] },
+      "retry_policy": {
+        "max_retries": 3,
+        "increment_state": "error_count",
+        "backoff_strategy": "exponential",
+        "backoff_base_seconds": 1.0,
+        "retry_on": [
+          "node_error",
+          "llm_timeout"
+        ]
+      },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": [
+          "DataValidator",
+          "AnalyticsEngine"
+        ]
+      },
       "observability_hooks": {
         "trace_nodes": true,
         "log_state_transitions": true,
@@ -529,7 +960,6 @@
       }
     }
   },
-
   {
     "use_case": "Autonomous Document Processing",
     "description": "Processes uploaded documents end-to-end: OCR/extraction, classification, entity extraction, summarization, and routing to the correct downstream system (CRM, ERP, archive). Demonstrates parallel processing and multi-destination routing.",
@@ -540,11 +970,27 @@
       "runtime": {
         "max_iterations": 10,
         "checkpoint_store": "sqlite",
-        "observability": { "tracing": true, "provider": "logging" }
+        "observability": {
+          "tracing": true,
+          "provider": "logging"
+        }
       },
       "memory": {
-        "short_term": { "type": "graph_state" },
-        "long_term": { "type": "sqlite", "provider": "sqlite", "collection": "document_archive" }
+        "short_term": {
+          "type": "graph_state",
+          "max_entries": 200
+        },
+        "long_term": {
+          "type": "sqlite",
+          "provider": "sqlite",
+          "collection": "document_archive",
+          "ttl_days": 30,
+          "index_fields": [
+            "task",
+            "result",
+            "status"
+          ]
+        }
       },
       "state_schema": {
         "document_id": "string",
@@ -567,8 +1013,14 @@
           "type": "agent",
           "system_prompt": "Classify the document into one of: invoice, contract, report, form, or other. Set document_type and confidence score.",
           "routing_logic": [
-            { "condition": "confidence < 0.6", "next": "HumanReview" },
-            { "condition": "confidence >= 0.6", "next": "EntityExtractor" }
+            {
+              "condition": "confidence < 0.6",
+              "next": "HumanReview"
+            },
+            {
+              "condition": "confidence >= 0.6",
+              "next": "EntityExtractor"
+            }
           ]
         },
         {
@@ -582,7 +1034,9 @@
           "id": "EntityExtractor",
           "type": "agent",
           "system_prompt": "Extract key entities from the document: names, dates, amounts, account numbers, addresses. Store as JSON in the 'entities' state variable.",
-          "memory_access": ["long_term"],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "Summarizer"
         },
         {
@@ -595,11 +1049,26 @@
           "id": "Router",
           "type": "conditional",
           "routing_logic": [
-            { "condition": "document_type == 'invoice'", "next": "ERPConnector" },
-            { "condition": "document_type == 'contract'", "next": "CRMConnector" },
-            { "condition": "document_type == 'report'", "next": "Archiver" },
-            { "condition": "document_type == 'form'", "next": "CRMConnector" },
-            { "condition": "document_type == 'other'", "next": "Archiver" }
+            {
+              "condition": "document_type == 'invoice'",
+              "next": "ERPConnector"
+            },
+            {
+              "condition": "document_type == 'contract'",
+              "next": "CRMConnector"
+            },
+            {
+              "condition": "document_type == 'report'",
+              "next": "Archiver"
+            },
+            {
+              "condition": "document_type == 'form'",
+              "next": "CRMConnector"
+            },
+            {
+              "condition": "document_type == 'other'",
+              "next": "Archiver"
+            }
           ]
         },
         {
@@ -618,29 +1087,87 @@
           "id": "Archiver",
           "type": "agent",
           "system_prompt": "Archive the document with its metadata, entities, and summary in long-term memory. Apply retention policy tags. Set routed=true.",
-          "memory_access": ["long_term"],
+          "memory_access": [
+            "long_term"
+          ],
           "next": "END"
         }
       ],
       "edges": [
-        { "from": "Extractor", "to": "Classifier" },
-        { "from": "Classifier", "to": "HumanReview", "condition": "confidence < 0.6" },
-        { "from": "Classifier", "to": "EntityExtractor", "condition": "confidence >= 0.6" },
-        { "from": "HumanReview", "to": "EntityExtractor" },
-        { "from": "EntityExtractor", "to": "Summarizer" },
-        { "from": "Summarizer", "to": "Router" },
-        { "from": "Router", "to": "ERPConnector", "condition": "document_type == 'invoice'" },
-        { "from": "Router", "to": "CRMConnector", "condition": "document_type == 'contract'" },
-        { "from": "Router", "to": "Archiver", "condition": "document_type == 'report'" },
-        { "from": "ERPConnector", "to": "END" },
-        { "from": "CRMConnector", "to": "END" },
-        { "from": "Archiver", "to": "END" }
+        {
+          "from": "Extractor",
+          "to": "Classifier"
+        },
+        {
+          "from": "Classifier",
+          "to": "HumanReview",
+          "condition": "confidence < 0.6"
+        },
+        {
+          "from": "Classifier",
+          "to": "EntityExtractor",
+          "condition": "confidence >= 0.6"
+        },
+        {
+          "from": "HumanReview",
+          "to": "EntityExtractor"
+        },
+        {
+          "from": "EntityExtractor",
+          "to": "Summarizer"
+        },
+        {
+          "from": "Summarizer",
+          "to": "Router"
+        },
+        {
+          "from": "Router",
+          "to": "ERPConnector",
+          "condition": "document_type == 'invoice'"
+        },
+        {
+          "from": "Router",
+          "to": "CRMConnector",
+          "condition": "document_type == 'contract'"
+        },
+        {
+          "from": "Router",
+          "to": "Archiver",
+          "condition": "document_type == 'report'"
+        },
+        {
+          "from": "ERPConnector",
+          "to": "END"
+        },
+        {
+          "from": "CRMConnector",
+          "to": "END"
+        },
+        {
+          "from": "Archiver",
+          "to": "END"
+        }
       ],
-      "checkpointing": { "enabled": true, "nodes": ["HumanReview", "Classifier"] },
+      "checkpointing": {
+        "enabled": true,
+        "nodes": [
+          "HumanReview",
+          "Classifier"
+        ]
+      },
       "observability_hooks": {
         "trace_nodes": true,
         "log_state_transitions": true,
         "capture_agent_outputs": true
+      },
+      "retry_policy": {
+        "max_retries": 3,
+        "backoff_strategy": "exponential",
+        "backoff_base_seconds": 1.0,
+        "retry_on": [
+          "node_error",
+          "llm_timeout"
+        ]
       }
     }
   }

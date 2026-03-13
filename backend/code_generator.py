@@ -113,7 +113,7 @@ class CodeGenerator:
         lines += [
             "from typing import TypedDict, Optional, List, Dict, Any",
             "from langgraph.graph import StateGraph, END",
-            "import os, json, requests",
+            "import os, json, math, time, sqlite3, threading, requests",
             "from dotenv import load_dotenv",
             "",
             "load_dotenv()",
@@ -158,17 +158,17 @@ class CodeGenerator:
         lines += self._build_graph(nodes, edges, checkpointing)
         lines.append("")
 
-        # ── Config summary comment ────────────────────────────────────────
-        if retry_policy or obs_hooks:
-            lines += [
-                "# ── Runtime config ─────────────────────────────────────────",
-                f"# retry_policy: {json.dumps(retry_policy)}",
-                f"# observability_hooks: {json.dumps(obs_hooks)}",
-                "",
-            ]
+        # ── Memory helpers (STM eviction + LTM TTL) ───────────────────────
+        memory_cfg = config.get("memory", {})
+        lines += self._build_memory_helpers(memory_cfg)
+        lines.append("")
+
+        # ── WorkflowRunner (retry/backoff + observability) ────────────────
+        lines += self._build_workflow_runner(config, retry_policy, obs_hooks)
+        lines.append("")
 
         # ── main() ────────────────────────────────────────────────────────
-        lines += self._build_main(state_schema)
+        lines += self._build_main(state_schema, retry_policy)
 
         return "\n".join(lines)
 
@@ -255,6 +255,18 @@ class CodeGenerator:
                 lines += [f"", f"# MCP server: {name}", f"MCP_{name.upper()}_URL={mcp_servers[name].get('endpoint', 'http://localhost:7070')}"]
 
         lines += ["", "# Environment", "APP_ENV=dev"]
+        # Retry env overrides
+        retry_policy = config.get("retry_policy", {})
+        max_retries = int(retry_policy.get("max_retries", 3))
+        backoff = retry_policy.get("backoff_strategy", "exponential")
+        base_sec = float(retry_policy.get("backoff_base_seconds", 1.0))
+        lines += [
+            "",
+            "# LLM Retry/Backoff (overrides baked-in workflow defaults)",
+            f"AGENT_MAX_RETRIES={max_retries}",
+            f"AGENT_BACKOFF_STRATEGY={backoff}",
+            f"AGENT_BACKOFF_BASE_SEC={base_sec}",
+        ]
         return "\n".join(lines) + "\n"
 
     def generate_docker_compose(self, config: dict) -> str:
@@ -491,27 +503,41 @@ class CodeGenerator:
             "LM_STUDIO_BASE_URL = os.getenv('LM_STUDIO_BASE_URL', 'http://localhost:1234')",
             "LM_STUDIO_MODEL    = os.getenv('LM_STUDIO_MODEL', 'local-model')",
             "",
+            "# Retry config is baked from workflow template retry_policy",
+            "_RETRY_MAX      = int(os.getenv('AGENT_MAX_RETRIES', '3'))",
+            "_RETRY_BACKOFF  = os.getenv('AGENT_BACKOFF_STRATEGY', 'exponential')  # 'fixed' or 'exponential'",
+            "_RETRY_BASE_SEC = float(os.getenv('AGENT_BACKOFF_BASE_SEC', '1.0'))",
+            "",
             "def call_llm(system_prompt: str, user_prompt: str,",
             "             temperature: float = 0.7, max_tokens: int = 1024,",
             "             model: str = None) -> str:",
-            '    """Call LM Studio /v1/chat/completions. Swap for OpenAI/Anthropic as needed."""',
+            '    """Call LM Studio /v1/chat/completions with automatic retry + exponential backoff.',
+            "    Swap base URL / auth headers for OpenAI, Anthropic, Gemini, or Ollama.",
+            '    """',
             "    _model = model or LM_STUDIO_MODEL",
             "    messages = []",
             "    if system_prompt:",
             "        messages.append({'role': 'system', 'content': system_prompt})",
             "    messages.append({'role': 'user', 'content': user_prompt})",
-            "    try:",
-            "        resp = requests.post(",
-            "            f'{LM_STUDIO_BASE_URL}/v1/chat/completions',",
-            "            json={'model': _model, 'messages': messages,",
-            "                  'temperature': temperature, 'max_tokens': max_tokens, 'stream': False},",
-            "            timeout=120,",
-            "        )",
-            "        resp.raise_for_status()",
-            "        return resp.json()['choices'][0]['message']['content'].strip()",
-            "    except Exception as e:",
-            "        print(f'[LLM ERROR] {e}')",
-            "        return f'[LLM_ERROR: {e}]'",
+            "    last_exc: Exception = RuntimeError('LLM call failed')",
+            "    for attempt in range(_RETRY_MAX + 1):",
+            "        try:",
+            "            resp = requests.post(",
+            "                f'{LM_STUDIO_BASE_URL}/v1/chat/completions',",
+            "                json={'model': _model, 'messages': messages,",
+            "                      'temperature': temperature, 'max_tokens': max_tokens, 'stream': False},",
+            "                timeout=120,",
+            "            )",
+            "            resp.raise_for_status()",
+            "            return resp.json()['choices'][0]['message']['content'].strip()",
+            "        except Exception as exc:",
+            "            last_exc = exc",
+            "            if attempt < _RETRY_MAX:",
+            "                _sleep = _RETRY_BASE_SEC * math.pow(2, attempt) if _RETRY_BACKOFF == 'exponential' else _RETRY_BASE_SEC",
+            "                print(f'[LLM RETRY {attempt+1}/{_RETRY_MAX}] {exc!r} — sleeping {_sleep:.1f}s')",
+            "                time.sleep(min(_sleep, 30.0))",
+            "    print(f'[LLM ERROR] {last_exc}')",
+            "    return f'[LLM_ERROR: {last_exc}]'",
         ]
 
     def _build_tool_stubs(self, mcp_servers: dict) -> list:
@@ -530,28 +556,129 @@ class CodeGenerator:
             "    return f'[TOOL_RESULT:{tool_name}] placeholder'",
             "",
             "def call_rag(collection: str, query: str, top_k: int = 5, provider: str = 'ltm') -> str:",
-            '    """Stub: replace with real RAG/vector search (Chroma, LTM, Milvus, etc.)."""',
-            "    print(f'[RAG] collection={collection}, query={query[:60]}')",
-            "    return f'[RAG_RESULT:{collection}] placeholder'",
+            '    """RAG search: LTM (SQLite) by default; extend for Chroma/Pinecone/Milvus."""',
+            "    if provider == 'ltm':",
+            "        try:",
+            "            conn = sqlite3.connect(_memory.LTM_PATH)",
+            "            rows = conn.execute(",
+            "                'SELECT step_context FROM ltm WHERE session_id=? AND step_context LIKE ? LIMIT ?',",
+            "                (collection, f'%{query[:80]}%', top_k),",
+            "            ).fetchall()",
+            "            conn.close()",
+            "            if rows:",
+            "                results = [json.loads(r[0]) for r in rows]",
+            "                return json.dumps(results, ensure_ascii=False)[:2000]",
+            "        except Exception as _e:",
+            "            print(f'[RAG/ltm] {_e}')",
+            "    # For chroma: import chromadb; client = chromadb.Client(); ...",
+            "    # For pinecone: import pinecone; idx = pinecone.Index(collection); ...",
+            "    print(f'[RAG] provider={provider}, collection={collection}, query={query[:60]}')",
+            "    return f'[RAG_RESULT:{collection}] no results'",
         ]
         return lines
 
-    def _build_guardrail_stubs(self) -> list:
+    def _build_guardrail_stubs(self) -> list:  # noqa: C901
         return [
-            "# ── Guardrail stubs ──────────────────────────────────────────────────────",
-            "import re",
+            "# ── Guardrail engine ─────────────────────────────────────────────────────",
+            "import re as _re",
+            "",
+            "# PII patterns (email, phone, SSN, credit card, IP address)",
+            "_PII_PATTERNS = [",
+            "    ('email',       _re.compile(r'\\b[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}\\b')),",
+            "    ('phone',       _re.compile(r'\\b(\\+?1[\\s.\\-]?)?\\(?\\d{3}\\)?[\\s.\\-]?\\d{3}[\\s.\\-]?\\d{4}\\b')),",
+            "    ('ssn',         _re.compile(r'\\b\\d{3}-\\d{2}-\\d{4}\\b')),",
+            "    ('credit_card', _re.compile(r'\\b(?:\\d{4}[\\s\\-]?){3}\\d{4}\\b')),",
+            "    ('ip_address',  _re.compile(r'\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b')),",
+            "]",
+            "# Prompt injection patterns",
+            "_INJECT_RE = _re.compile(",
+            "    r'(?:ignore\\s+(?:all\\s+)?(?:previous|prior|above)\\s+instructions?'",
+            "    r'|override\\s+(?:system|your)\\s+(?:prompt|instructions?|rules?)'",
+            "    r'|forget\\s+(?:everything|all)\\s+(?:you\\s+)?(?:know|were\\s+told)'",
+            "    r'|you\\s+are\\s+now\\s+(?:a\\s+)?(?:different|new|evil|unrestricted)'",
+            "    r'|disregard\\s+(?:your|all)\\s+(?:instructions?|guidelines?|safety)'",
+            "    r'|jailbreak|DAN\\s+mode|developer\\s+mode\\s+enabled)',",
+            "    _re.IGNORECASE,",
+            ")",
+            "# Harmful content keywords",
+            "_HARMFUL_KW = [",
+            "    'how to make a bomb','synthesize drugs','manufacture weapons',",
+            "    'instructions for violence','ddos attack','create malware','make explosives',",
+            "]",
+            "# Hate speech",
+            "_HATE_RE = _re.compile(",
+            "    r'\\b(all\\s+\\w+\\s+should\\s+(?:die|be\\s+killed|be\\s+exterminated)'",
+            "    r'|inferior\\s+race|ethnic\\s+cleansing|racial\\s+extermination)\\b',",
+            "    _re.IGNORECASE,",
+            ")",
+            "# Secrets / credentials",
+            "_SECRET_PATTERNS = [",
+            "    ('api_key',      _re.compile(r'\\b(?:sk|pk|rk|ak)[_\\-][A-Za-z0-9]{20,}\\b')),",
+            "    ('bearer_token', _re.compile(r'\\bBearer\\s+[A-Za-z0-9\\-._~+/]{20,}\\b', _re.IGNORECASE)),",
+            "    ('private_key',  _re.compile(r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----')),",
+            "    ('github_token', _re.compile(r'\\bgh[pousr]_[A-Za-z0-9]{36,}\\b')),",
+            "]",
+            "",
+            "def _apply_pii(text: str, action: str) -> str:",
+            "    for pii_type, pat in _PII_PATTERNS:",
+            "        if action == 'block' and pat.search(text):",
+            "            raise ValueError(f'PII detected ({pii_type}) — blocked by guardrail')",
+            "        if action == 'redact':",
+            "            text = pat.sub(f'[{pii_type.upper()}_REDACTED]', text)",
+            "    return text",
             "",
             "def apply_input_guardrails(text: str, guardrails_cfg: dict, node_id: str = '') -> str:",
-            '    """Apply input context guardrails (PII redaction, length truncation, etc.)."""',
+            '    """Apply input guardrails: length truncation, PII redaction, prompt injection, secrets."""',
+            "    # Length truncation",
             "    max_chars = (guardrails_cfg.get('context_length') or {}).get('max_chars')",
             "    if max_chars and len(text) > max_chars:",
             "        text = text[:max_chars] + '... [TRUNCATED]'",
-            "    # TODO: add PII redaction, prompt injection detection, secrets scanning",
+            "    # PII on input",
+            "    pii_cfg = guardrails_cfg.get('pii') or {}",
+            "    if pii_cfg:",
+            "        text = _apply_pii(text, pii_cfg.get('action', 'redact'))",
+            "    # Prompt injection detection",
+            "    inj_cfg = guardrails_cfg.get('prompt_injection') or {}",
+            "    if inj_cfg and _INJECT_RE.search(text):",
+            "        action = inj_cfg.get('action', 'block')",
+            "        if action == 'block':",
+            "            raise ValueError(f'[{node_id}] Prompt injection detected — blocked')",
+            "        print(f'[GUARDRAIL:{node_id}] Prompt injection warning')",
+            "    # Secrets detection",
+            "    sec_cfg = guardrails_cfg.get('secrets_detection') or {}",
+            "    if sec_cfg:",
+            "        for sec_type, pat in _SECRET_PATTERNS:",
+            "            if pat.search(text):",
+            "                action = sec_cfg.get('action', 'redact')",
+            "                if action == 'block':",
+            "                    raise ValueError(f'[{node_id}] Secret/credential detected ({sec_type}) — blocked')",
+            "                text = pat.sub(f'[{sec_type.upper()}_REDACTED]', text)",
             "    return text",
             "",
             "def apply_output_guardrails(text: str, guardrails_cfg: dict, node_id: str = '') -> str:",
-            '    """Apply output safety guardrails (PII, harmful content, hate speech, etc.)."""',
-            "    # TODO: wire to guardrails.py apply_guardrails()",
+            '    """Apply output guardrails: PII redaction, harmful content, hate speech detection."""',
+            "    # PII",
+            "    pii_cfg = guardrails_cfg.get('pii') or {}",
+            "    if pii_cfg:",
+            "        text = _apply_pii(text, pii_cfg.get('action', 'redact'))",
+            "    # Harmful content",
+            "    harm_cfg = guardrails_cfg.get('harmful_content') or {}",
+            "    if harm_cfg:",
+            "        low = text.lower()",
+            "        for kw in _HARMFUL_KW:",
+            "            if kw in low:",
+            "                action = harm_cfg.get('action', 'block')",
+            "                if action == 'block':",
+            "                    raise ValueError(f'[{node_id}] Harmful content detected — blocked')",
+            "                text = text.replace(kw, '[HARMFUL_CONTENT_REDACTED]')",
+            "                break",
+            "    # Hate speech",
+            "    hate_cfg = guardrails_cfg.get('hate_speech') or {}",
+            "    if hate_cfg and _HATE_RE.search(text):",
+            "        action = hate_cfg.get('action', 'block')",
+            "        if action == 'block':",
+            "            raise ValueError(f'[{node_id}] Hate speech detected — blocked')",
+            "        text = _HATE_RE.sub('[HATE_SPEECH_REDACTED]', text)",
             "    return text",
             "",
             "def validate_output(text: str, output_schema: dict, validation_cfg: dict, node_id: str = '') -> tuple:",
@@ -860,10 +987,205 @@ class CodeGenerator:
         lines.append("graph = workflow.compile()")
         return lines
 
-    def _build_main(self, state_schema: dict) -> list:
+    def _build_memory_helpers(self, memory_cfg: dict) -> list:
+        """Generate a self-contained MemoryManager with STM eviction (MM-2) and LTM TTL (MM-3)."""
+        stm = memory_cfg.get("short_term", {}) if memory_cfg else {}
+        ltm = memory_cfg.get("long_term", {}) if memory_cfg else {}
+        max_entries = int(stm.get("max_entries", 0))
+        ttl_days = float(ltm.get("ttl_days", 0))
+        ltm_path = ltm.get("path", "ltm.db")
+
+        return [
+            "# ── Memory Manager ───────────────────────────────────────────────────────",
+            f"# STM: in-process dict, max_entries={max_entries or 'unlimited'} (LRU eviction)",
+            f"# LTM: SQLite at {ltm_path!r}, ttl_days={ttl_days or 'unlimited'}",
+            "class _MemoryManager:",
+            f"    MAX_STM_ENTRIES: int = {max_entries}  # 0 = unlimited; oldest session evicted when exceeded",
+            f"    LTM_TTL_DAYS: float = {ttl_days}     # 0 = no pruning; rows older than N days auto-deleted",
+            f"    LTM_PATH: str = {ltm_path!r}",
+            "",
+            "    def __init__(self):",
+            "        self._stm: Dict[str, Any] = {}  # insertion-ordered for LRU",
+            "        self._lock = threading.Lock()",
+            "        self._init_ltm()",
+            "",
+            "    def _init_ltm(self) -> None:",
+            "        conn = sqlite3.connect(self.LTM_PATH)",
+            "        conn.execute(",
+            "            'CREATE TABLE IF NOT EXISTS ltm'",
+            "            '(session_id TEXT, step_idx INTEGER, step_context TEXT, timestamp REAL DEFAULT 0)'",
+            "        )",
+            "        try:",
+            "            conn.execute('ALTER TABLE ltm ADD COLUMN timestamp REAL DEFAULT 0')",
+            "        except sqlite3.OperationalError:",
+            "            pass  # column already exists",
+            "        conn.commit()",
+            "        conn.close()",
+            "",
+            "    def save_stm(self, session_id: str, state: Dict[str, Any]) -> None:",
+            '        """Persist latest state for session. Evicts oldest session if over MAX_STM_ENTRIES."""',
+            "        with self._lock:",
+            "            self._stm.pop(session_id, None)   # re-insert at end (most-recent)",
+            "            self._stm[session_id] = state",
+            "            if self.MAX_STM_ENTRIES > 0:",
+            "                while len(self._stm) > self.MAX_STM_ENTRIES:",
+            "                    del self._stm[next(iter(self._stm))]  # evict oldest",
+            "",
+            "    def load_stm(self, session_id: str) -> Optional[Dict[str, Any]]:",
+            '        """Load last-saved state for a session (for resume support)."""',
+            "        with self._lock:",
+            "            return self._stm.get(session_id)",
+            "",
+            "    def append_ltm(self, session_id: str, entry: Dict[str, Any]) -> None:",
+            '        """Append a step record to LTM. Prunes rows older than LTM_TTL_DAYS."""',
+            "        conn = sqlite3.connect(self.LTM_PATH)",
+            "        now = time.time()",
+            "        row = conn.execute(",
+            "            'SELECT MAX(step_idx) FROM ltm WHERE session_id=?', (session_id,)",
+            "        ).fetchone()",
+            "        idx = (row[0] or 0) + 1",
+            "        conn.execute(",
+            "            'INSERT INTO ltm VALUES (?, ?, ?, ?)',",
+            "            (session_id, idx, json.dumps(entry), now),",
+            "        )",
+            "        if self.LTM_TTL_DAYS > 0:",
+            "            cutoff = now - (self.LTM_TTL_DAYS * 86400)",
+            "            conn.execute(",
+            "                'DELETE FROM ltm WHERE session_id=? AND timestamp > 0 AND timestamp < ?',",
+            "                (session_id, cutoff),",
+            "            )",
+            "        conn.commit()",
+            "        conn.close()",
+            "",
+            "    def load_ltm(self, session_id: str, limit: int = 100) -> List[Dict[str, Any]]:",
+            '        """Load full LTM history for a session (for debugging or analytics)."""',
+            "        conn = sqlite3.connect(self.LTM_PATH)",
+            "        rows = conn.execute(",
+            "            'SELECT step_context FROM ltm WHERE session_id=? ORDER BY step_idx LIMIT ?',",
+            "            (session_id, limit),",
+            "        ).fetchall()",
+            "        conn.close()",
+            "        return [json.loads(r[0]) for r in rows]",
+            "",
+            "",
+            "_memory = _MemoryManager()",
+        ]
+
+    def _build_workflow_runner(self, config: dict, retry_policy: dict, obs_hooks: dict) -> list:
+        """Generate run_workflow() — iterates the graph, persists memory, emits observability logs.
+
+        NOTE: LLM retry/backoff is handled inside call_llm() itself (that's where transient
+        failures occur). run_workflow() focuses on: STM resume, step-level memory persistence,
+        and structured observability output per step.
+        """
+        trace_nodes = bool(obs_hooks.get("trace_nodes", True))
+        log_transitions = bool(obs_hooks.get("log_state_transitions", True))
+        capture_outputs = bool(obs_hooks.get("capture_agent_outputs", True))
+        max_iter = int((config.get("runtime") or {}).get("max_iterations", 20))
+        max_retries = int(retry_policy.get("max_retries", 3))
+        backoff_strategy = retry_policy.get("backoff_strategy", "fixed")
+        backoff_base = float(retry_policy.get("backoff_base_seconds", 1.0))
+
+        lines = [
+            "# ── Workflow Runner ──────────────────────────────────────────────────────",
+            f"# LLM retry: max={max_retries}, backoff={backoff_strategy}, base={backoff_base}s (baked into call_llm)",
+            f"# Observability: trace_nodes={trace_nodes}, log_transitions={log_transitions}, capture_outputs={capture_outputs}",
+            "def run_workflow(initial_state: dict, session_id: str = 'run-001',",
+            "                 resume: bool = False) -> dict:",
+            '    """Run (or resume) the workflow, saving STM/LTM at every step.',
+            "",
+            "    Args:",
+            "        initial_state: Starting state dict (WorkflowState fields).",
+            "        session_id:    Unique ID for this run — used as the STM/LTM key.",
+            "        resume:        If True, load saved STM state for session_id and continue",
+            "                       from where the last run left off.",
+            '    """',
+            "    # ── Resume support: load prior STM state if requested",
+            "    if resume:",
+            "        saved = _memory.load_stm(session_id)",
+            "        if saved:",
+            "            state = dict(saved)",
+            "            print(f'[RESUME] Loaded STM for session {session_id} ({len(state)} keys)')",
+            "        else:",
+            "            print(f'[RESUME] No saved state found for {session_id!r} — starting fresh')",
+            "            state = dict(initial_state)",
+            "    else:",
+            "        state = dict(initial_state)",
+            "",
+            f"    MAX_ITER = {max_iter}",
+            "    step_idx = 0",
+            "",
+            "    for step_output in graph.stream(state):",
+            "        for node_name, node_updates in step_output.items():",
+            "            if isinstance(node_updates, dict):",
+            "                state.update(node_updates)",
+        ]
+
+        # Observability — log_state_transitions: print step summary
+        if log_transitions:
+            lines += [
+                "            # Observability: step transition log",
+                "            print(f'[STEP {step_idx}] node={node_name} sender={state.get(\"sender\", \"\")} keys={list(node_updates.keys()) if isinstance(node_updates, dict) else \"?\"}')",
+            ]
+
+        # Observability — trace_nodes: structured JSON trace per step
+        if trace_nodes:
+            lines += [
+                "        # Observability: structured node trace",
+                "        _trace_entry = {",
+                "            'step': step_idx,",
+                "            'nodes': list(step_output.keys()),",
+                "            'sender': state.get('sender', ''),",
+                "        }",
+                "        print(f'[TRACE] {json.dumps(_trace_entry)}')",
+            ]
+
+        # Memory: always persist STM; optionally persist LTM per step
+        lines.append("        # Memory: persist step to STM (and LTM if capture_outputs enabled)")
+        lines.append("        _memory.save_stm(session_id, state)")
+        if capture_outputs:
+            lines += [
+                "        _ltm_entry = {",
+                "            'step': step_idx,",
+                "            'nodes': list(step_output.keys()),",
+                "            'sender': state.get('sender', ''),",
+                "            'state_keys': list(state.keys()),",
+                "        }",
+                "        _memory.append_ltm(session_id, _ltm_entry)",
+            ]
+
+        lines += [
+            "        step_idx += 1",
+            f"        if step_idx >= MAX_ITER:",
+            "            print(f'[WARN] max_iterations={MAX_ITER} reached — stopping')",
+            "            break",
+            "",
+            "    return state",
+        ]
+        return lines
+
+    def _build_main(self, state_schema: dict, retry_policy: dict = None) -> list:
+        rp = retry_policy or {}
+        max_retries = int(rp.get("max_retries", 3))
+        backoff = rp.get("backoff_strategy", "exponential")
+        base_sec = float(rp.get("backoff_base_seconds", 1.0))
         lines = [
             "# ── Entry Point ──────────────────────────────────────────────────────────",
+            "# LLM retry/backoff env overrides (baked from workflow retry_policy):",
+            f"# AGENT_MAX_RETRIES={max_retries}, AGENT_BACKOFF_STRATEGY={backoff!r}, AGENT_BACKOFF_BASE_SEC={base_sec}",
+            "# Set these env vars to override at deploy time without editing code.",
+            "",
             "def main():",
+            "    import argparse",
+            "    parser = argparse.ArgumentParser(description='Run the generated agentic workflow')",
+            "    parser.add_argument('--session-id', default=None, help='Session ID (auto-generated if omitted)')",
+            "    parser.add_argument('--resume', action='store_true', help='Resume from last saved STM state')",
+            "    args = parser.parse_args()",
+            "",
+            "    import uuid",
+            "    session_id = args.session_id or str(uuid.uuid4())",
+            "    print(f'[MAIN] session_id={session_id} resume={args.resume}')",
+            "",
             "    initial_state = WorkflowState(",
         ]
         for field, meta in state_schema.items():
@@ -874,9 +1196,10 @@ class CodeGenerator:
             "        metadata={},",
             '        sender="",',
             "    )",
-            "    result = graph.invoke(initial_state)",
+            "    result = run_workflow(dict(initial_state), session_id=session_id, resume=args.resume)",
             "    print('Workflow result:')",
             "    print(json.dumps({k: v for k, v in result.items() if k != 'messages'}, indent=2, default=str))",
+            "    print(f'[MAIN] LTM history: {len(_memory.load_ltm(session_id))} steps recorded in {_MemoryManager.LTM_PATH!r}')",
             "",
             "",
             'if __name__ == "__main__":',

@@ -5,6 +5,7 @@ import threading
 import sqlite3
 import os
 import json
+import time
 
 class MemoryManager:
     """
@@ -12,25 +13,40 @@ class MemoryManager:
     STM: Fast in-memory (thread-safe dict) or Redis (future option)
     LTM: Durable storage (SQLite DB, file, or cloud - here: SQLite by default)
     """
-    def __init__(self, stm_backend: str = 'memory', ltm_backend: str = 'sqlite', ltm_path: str = 'ltm.db'):
-        # STM: session_id -> state (thread-safe)
-        # Support common misconfigurations where 'sqlite' is used for memory.backend in config.json
-        if stm_backend in ('memory', 'sqlite'):
-            self._stm = {}
+    def __init__(
+        self,
+        stm_backend: str = 'memory',
+        ltm_backend: str = 'sqlite',
+        ltm_path: str = 'ltm.db',
+        max_stm_entries: int = 0,   # 0 = unlimited; >0 evicts oldest sessions (MM-2)
+        ltm_ttl_days: float = 0,    # 0 = no pruning; >0 deletes rows older than N days (MM-3)
+    ):
+        # STM: session_id -> state (thread-safe, insertion-ordered dict for LRU eviction)
+        if stm_backend in ('memory', 'sqlite', 'graph_state'):
+            self._stm: Dict[str, Any] = {}
         else:
-            # e.g., Redis (not implemented yet)
-            self._stm = None
+            self._stm = {}
         self._stm_lock = threading.Lock()
+        self.max_stm_entries = max_stm_entries  # MM-2: eviction limit
         # LTM: SQLite DB for session history
         self.ltm_backend = ltm_backend
         self.ltm_path = ltm_path
+        self.ltm_ttl_days = ltm_ttl_days  # MM-3: TTL pruning
         if ltm_backend == 'sqlite':
             self._init_sqlite()
 
     # --- STM Methods ---
     def save_stm(self, session_id: str, state: Dict[str, Any]):
         with self._stm_lock:
+            # Move session to end (most-recently-used) by re-inserting
+            self._stm.pop(session_id, None)
             self._stm[session_id] = state
+            # MM-2: evict oldest sessions when over limit
+            if self.max_stm_entries > 0:
+                while len(self._stm) > self.max_stm_entries:
+                    # Dict is insertion-ordered; first key = oldest
+                    oldest = next(iter(self._stm))
+                    del self._stm[oldest]
 
     def load_stm(self, session_id: str) -> Optional[Dict[str, Any]]:
         with self._stm_lock:
@@ -48,8 +64,14 @@ class MemoryManager:
         c.execute('''CREATE TABLE IF NOT EXISTS ltm (
             session_id TEXT,
             step_idx INTEGER,
-            step_context TEXT
+            step_context TEXT,
+            timestamp REAL DEFAULT 0
         )''')
+        # MM-3: migration — add timestamp column to existing tables
+        try:
+            c.execute('ALTER TABLE ltm ADD COLUMN timestamp REAL DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.commit()
         conn.close()
 
@@ -58,8 +80,18 @@ class MemoryManager:
             conn = sqlite3.connect(self.ltm_path)
             c = conn.cursor()
             idx = self._get_next_step_idx(session_id, c)
-            c.execute('INSERT INTO ltm (session_id, step_idx, step_context) VALUES (?, ?, ?)',
-                      (session_id, idx, json.dumps(step_context)))
+            now = time.time()
+            c.execute(
+                'INSERT INTO ltm (session_id, step_idx, step_context, timestamp) VALUES (?, ?, ?, ?)',
+                (session_id, idx, json.dumps(step_context), now)
+            )
+            # MM-3: prune rows older than ltm_ttl_days
+            if self.ltm_ttl_days > 0:
+                cutoff = now - (self.ltm_ttl_days * 86400)
+                c.execute(
+                    'DELETE FROM ltm WHERE session_id=? AND timestamp > 0 AND timestamp < ?',
+                    (session_id, cutoff)
+                )
             conn.commit()
             conn.close()
 

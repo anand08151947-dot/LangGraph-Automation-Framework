@@ -305,6 +305,174 @@ const OllamaPanel: React.FC<{ initialCfg: any }> = ({ initialCfg }) => {
   );
 };
 
+// ── SET-8: RAG / Vector Store Config Panel ───────────────────────────────────
+const RAG_PROVIDERS = [
+  { id: 'ltm', label: 'LTM (SQLite — built-in)', needsDir: false },
+  { id: 'local', label: 'Local Files (.txt / .md)', needsDir: true },
+  { id: 'chroma', label: 'ChromaDB (local / Docker)', needsDir: true },
+  { id: 'pinecone', label: 'Pinecone (cloud)', needsDir: false },
+  { id: 'milvus', label: 'Milvus', needsDir: false },
+];
+
+const RagConfigPanel: React.FC<{ initialCfg: any }> = ({ initialCfg }) => {
+  const [provider, setProvider] = useState<string>(initialCfg?.rag?.provider ?? 'ltm');
+  const [collection, setCollection] = useState<string>(initialCfg?.rag?.collection ?? 'memory');
+  const [persistDir, setPersistDir] = useState<string>(initialCfg?.rag?.persist_dir ?? './chroma_db');
+  const [topK, setTopK] = useState<number>(initialCfg?.rag?.top_k ?? 5);
+  const [testState, setTestState] = useState<TestState>('idle');
+  const [testMsg, setTestMsg] = useState<string>('');
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const needsDir = RAG_PROVIDERS.find(p => p.id === provider)?.needsDir ?? false;
+
+  const testConnection = async () => {
+    setTestState('testing'); setTestMsg('');
+    try {
+      const r = await fetch('/config/rag/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, collection, persist_dir: persistDir }),
+      });
+      if (r.ok) { setTestState('ok'); setTestMsg('Connection successful'); }
+      else { const d = await r.json(); setTestState('error'); setTestMsg(d.detail ?? 'Failed'); }
+    } catch (e: any) { setTestState('error'); setTestMsg(e.message ?? 'Network error'); }
+  };
+
+  const save = async () => {
+    setSaving(true); setSaveMsg(null);
+    try {
+      const r = await fetch('/config/rag', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, collection, persist_dir: persistDir, top_k: topK }),
+      });
+      if (r.ok) setSaveMsg({ type: 'success', text: 'RAG config saved' });
+      else { const d = await r.json(); setSaveMsg({ type: 'error', text: d.detail ?? 'Save failed' }); }
+    } catch (e: any) { setSaveMsg({ type: 'error', text: e.message ?? 'Network error' }); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-500">Configure the default RAG provider used when <code className="bg-slate-100 px-1 rounded text-xs">pre_llm.rag.provider</code> is not set in the workflow template.</p>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Provider</label>
+          <select value={provider} onChange={e => setProvider(e.target.value)} className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300">
+            {RAG_PROVIDERS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Collection / Namespace</label>
+          <input value={collection} onChange={e => setCollection(e.target.value)} className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300" placeholder="memory" />
+        </div>
+        {needsDir && (
+          <div className="col-span-2">
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Persist Directory</label>
+            <input value={persistDir} onChange={e => setPersistDir(e.target.value)} className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-indigo-300" placeholder="./chroma_db" />
+          </div>
+        )}
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Default Top-K</label>
+          <input type="number" min={1} max={50} value={topK} onChange={e => setTopK(Number(e.target.value))} className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300" />
+        </div>
+      </div>
+      <div className="flex items-center gap-3 pt-2">
+        <Button variant="secondary" onClick={testConnection} isLoading={testState === 'testing'}>
+          <i className="fas fa-plug mr-2"></i>Test Connection
+        </Button>
+        {testState !== 'idle' && (
+          <span className={`text-xs font-semibold px-3 py-1 rounded-full ${testState === 'ok' ? 'bg-emerald-100 text-emerald-700' : testState === 'error' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+            {testState === 'testing' ? 'Testing…' : testMsg}
+          </span>
+        )}
+      </div>
+      {saveMsg && <p className={`text-sm font-medium ${saveMsg.type === 'success' ? 'text-emerald-600' : 'text-rose-500'}`}>{saveMsg.text}</p>}
+      <Button onClick={save} isLoading={saving} className="w-fit">
+        <i className="fas fa-save mr-2"></i>Save RAG Config
+      </Button>
+    </div>
+  );
+};
+
+// ── SET-9: Observability & Tracing Panel ─────────────────────────────────────
+const ObservabilityPanel: React.FC<{ initialCfg: any }> = ({ initialCfg }) => {
+  const obs = initialCfg?.observability ?? {};
+  const [traceNodes, setTraceNodes] = useState<boolean>(obs.trace_nodes ?? true);
+  const [logTransitions, setLogTransitions] = useState<boolean>(obs.log_state_transitions ?? true);
+  const [captureOutputs, setCaptureOutputs] = useState<boolean>(obs.capture_agent_outputs ?? true);
+  const [langsmithKey, setLangsmithKey] = useState<string>(obs.langsmith_api_key ?? '');
+  const [langsmithProject, setLangsmithProject] = useState<string>(obs.langsmith_project ?? 'default');
+  const [otelEndpoint, setOtelEndpoint] = useState<string>(obs.otel_endpoint ?? '');
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const toggleRow = (label: string, value: boolean, setter: (v: boolean) => void) => (
+    <div className="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
+      <div>
+        <p className="text-sm font-semibold text-slate-700">{label}</p>
+      </div>
+      <button
+        onClick={() => setter(!value)}
+        className={`w-12 h-6 rounded-full relative transition-colors duration-200 ${value ? 'bg-indigo-600' : 'bg-slate-300'}`}
+      >
+        <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all duration-200 ${value ? 'right-1' : 'left-1'}`}></span>
+      </button>
+    </div>
+  );
+
+  const save = async () => {
+    setSaving(true); setSaveMsg(null);
+    try {
+      const r = await fetch('/config/observability', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trace_nodes: traceNodes,
+          log_state_transitions: logTransitions,
+          capture_agent_outputs: captureOutputs,
+          langsmith_api_key: langsmithKey || undefined,
+          langsmith_project: langsmithProject || undefined,
+          otel_endpoint: otelEndpoint || undefined,
+        }),
+      });
+      if (r.ok) setSaveMsg({ type: 'success', text: 'Observability config saved' });
+      else { const d = await r.json(); setSaveMsg({ type: 'error', text: d.detail ?? 'Save failed' }); }
+    } catch (e: any) { setSaveMsg({ type: 'error', text: e.message ?? 'Network error' }); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-500">Global defaults for observability. Per-workflow <code className="bg-slate-100 px-1 rounded text-xs">observability_hooks</code> overrides these when set in the template.</p>
+      <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
+        {toggleRow('Trace node executions', traceNodes, setTraceNodes)}
+        {toggleRow('Log state transitions', logTransitions, setLogTransitions)}
+        {toggleRow('Capture agent outputs', captureOutputs, setCaptureOutputs)}
+      </div>
+      <div className="grid grid-cols-2 gap-4 pt-2">
+        <div className="col-span-2">
+          <label className="block text-xs font-semibold text-slate-600 mb-1">LangSmith API Key <span className="text-slate-400 font-normal">(optional)</span></label>
+          <input type="password" value={langsmithKey} onChange={e => setLangsmithKey(e.target.value)} className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-indigo-300" placeholder="ls__..." />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">LangSmith Project</label>
+          <input value={langsmithProject} onChange={e => setLangsmithProject(e.target.value)} className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300" placeholder="default" />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">OpenTelemetry Endpoint <span className="text-slate-400 font-normal">(optional)</span></label>
+          <input value={otelEndpoint} onChange={e => setOtelEndpoint(e.target.value)} className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-indigo-300" placeholder="http://localhost:4317" />
+        </div>
+      </div>
+      {saveMsg && <p className={`text-sm font-medium ${saveMsg.type === 'success' ? 'text-emerald-600' : 'text-rose-500'}`}>{saveMsg.text}</p>}
+      <Button onClick={save} isLoading={saving} className="w-fit">
+        <i className="fas fa-save mr-2"></i>Save Observability Config
+      </Button>
+    </div>
+  );
+};
+
 // ── Main SettingsView ────────────────────────────────────────────────────────
 const SettingsView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Provider>('lm_studio');
@@ -393,6 +561,16 @@ const SettingsView: React.FC = () => {
               <i className="fas fa-plus mr-2"></i> Add New Server
             </Button>
           </div>
+        </Card>
+
+        {/* SET-8: RAG / Vector Store Configuration */}
+        <Card title="RAG / Vector Store">
+          <RagConfigPanel initialCfg={cfg} />
+        </Card>
+
+        {/* SET-9: Observability Configuration */}
+        <Card title="Observability & Tracing">
+          <ObservabilityPanel initialCfg={cfg} />
         </Card>
 
         {/* Preferences — unchanged */}

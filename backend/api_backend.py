@@ -1036,6 +1036,85 @@ def update_llm_config(update: dict = Body(...)):
         return {"status": "updated", "provider": provider}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update config: {e}")
+
+# --- SET-8: RAG Config Endpoints ---
+@app.put("/config/rag")
+def update_rag_config(update: dict = Body(...)):
+    """Save RAG/vector-store global defaults to config.json."""
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        cfg["rag"] = {
+            "provider": update.get("provider", "ltm"),
+            "collection": update.get("collection", "memory"),
+            "persist_dir": update.get("persist_dir", "./chroma_db"),
+            "top_k": int(update.get("top_k", 5)),
+        }
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        return {"status": "updated", "rag": cfg["rag"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update RAG config: {e}")
+
+@app.post("/config/rag/test")
+def test_rag_connection(body: dict = Body(...)):
+    """Test RAG provider connectivity."""
+    provider = body.get("provider", "ltm")
+    if provider == "ltm":
+        import sqlite3 as _sq
+        try:
+            conn = _sq.connect("ltm.db")
+            conn.execute("SELECT 1")
+            conn.close()
+            return {"status": "ok", "message": "LTM (SQLite) accessible"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    elif provider == "chroma":
+        try:
+            import chromadb  # type: ignore
+            persist_dir = body.get("persist_dir", "./chroma_db")
+            client = chromadb.PersistentClient(path=persist_dir)
+            _ = client.list_collections()
+            return {"status": "ok", "message": f"ChromaDB accessible at {persist_dir}"}
+        except ImportError:
+            raise HTTPException(status_code=400, detail="chromadb not installed — run: pip install chromadb")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    elif provider == "local":
+        import os as _os
+        persist_dir = body.get("persist_dir", "./docs")
+        if _os.path.isdir(persist_dir):
+            count = len([f for f in _os.listdir(persist_dir) if f.endswith(('.txt', '.md'))])
+            return {"status": "ok", "message": f"Found {count} .txt/.md files in {persist_dir}"}
+        return {"status": "ok", "message": f"Directory {persist_dir} will be created on first use"}
+    else:
+        return {"status": "ok", "message": f"Provider '{provider}' — connection check not implemented yet"}
+
+# --- SET-9: Observability Config Endpoint ---
+@app.put("/config/observability")
+def update_observability_config(update: dict = Body(...)):
+    """Save global observability settings to config.json."""
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        obs = {
+            "trace_nodes": bool(update.get("trace_nodes", True)),
+            "log_state_transitions": bool(update.get("log_state_transitions", True)),
+            "capture_agent_outputs": bool(update.get("capture_agent_outputs", True)),
+        }
+        if update.get("langsmith_api_key"):
+            obs["langsmith_api_key"] = update["langsmith_api_key"]
+            obs["langsmith_project"] = update.get("langsmith_project", "default")
+        if update.get("otel_endpoint"):
+            obs["otel_endpoint"] = update["otel_endpoint"]
+        cfg["observability"] = obs
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        return {"status": "updated", "observability": obs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update observability config: {e}")
 
 # --- Code Generation ---
 @app.post('/generate_code')
