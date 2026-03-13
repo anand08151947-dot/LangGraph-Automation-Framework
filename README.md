@@ -134,31 +134,4 @@ This project is licensed under the MIT License.
 For questions or support, open an issue or contact the maintainer.
 
 ---
-For detailed module breakdown and developer workflows, see ENHANCEMENT_PLAN.md and COMMANDS.md.
-
-
-git ls-files --cached | Where-Object { $_ -match "__pycache__|\.pyc$|\.pyo$|/artifacts/|node_modules|/dist/|dist-ssr|\.db$|\.zip$|\.log$|\.env|\.coverage|htmlcov" } 2>&1
-
-git ls-files --cached 2>&1
-
-npx vite build 2>&1
-
-curl -s http://localhost:1234/v1/models 2>&1
-
-$body = '{"model":"llama-3.2-3b-instruct","prompt":"Say hello in one word.","temperature":0.2,"stream":false,"max_tokens":20}'; curl -s -X POST http://localhost:1234/v1/completions -H "Content-Type: application/json" -d $body 2>&1
-
-Start-Process -NoNewWindow -FilePath "python" -ArgumentList "-m uvicorn backend.api_backend:app --host 0.0.0.0 --port 8000" -PassThru | Select-Object Id
-
-python -m uvicorn backend.api_backend:app --host 0.0.0.0 --port 8000
-
-# Test 1: Health check
-Write-Host "=== Health ===" 
-curl -s http://localhost:8000/health
-
-# Test 2: English to JSON via LM Studio
-Write-Host "`n=== English to JSON (LM Studio) ==="
-$body = '{"instructions":"Create a two-agent workflow: a researcher agent that searches the web and a writer agent that summarizes the findings."}'
-curl -s -X POST http://localhost:8000/english_to_json -H "Content-Type: application/json" -d $body 2>&1 | Select-Object -First 40
-
-
-Get-Content "C:\Anand\AI-WorkSpace\LangGraph-Automation-Framework\backend\api_backend.py" | Select-String -Pattern "import sys|_run_workflow_async|orchestrate_async|workflow_status\[run_id\]|if __name__" | Select-Object LineNumber, Line | Format-Table -AutoSize
+For detailed module breakdown and developer workflows, see [COMMANDS.md](COMMANDS.md).
