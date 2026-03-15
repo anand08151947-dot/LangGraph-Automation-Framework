@@ -26,11 +26,14 @@ deactivate
 ## 2 · Backend
 
 ```powershell
-# Start backend (standard)
+# Start backend (network-accessible — required for remote browser access)
 python -m uvicorn backend.api_backend:app --host 0.0.0.0 --port 8000
 
-# Start backend with auto-reload (development)
+# Start backend with auto-reload (development, localhost only)
 python -m uvicorn backend.api_backend:app --reload
+
+# Start backend (network-accessible) with auto-reload
+python -m uvicorn backend.api_backend:app --host 0.0.0.0 --port 8000 --reload
 
 # Start backend in background (detached, returns PID)
 Start-Process -NoNewWindow -FilePath "python" `
@@ -40,6 +43,9 @@ Start-Process -NoNewWindow -FilePath "python" `
 # Stop background backend by PID (replace 12345)
 Stop-Process -Id 12345
 ```
+
+> **Note**: Use `--host 0.0.0.0` when the UI is accessed from another machine or device on the network.  
+> The frontend auto-detects the backend URL using `window.location.hostname:8000` — no extra config needed.
 
 ---
 
