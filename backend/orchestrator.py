@@ -126,6 +126,17 @@ class Orchestrator:
         state_schema: Dict[str, str] = config_json.get("state_schema", {})
         max_iterations: int = runtime_cfg.get("max_iterations", 20)
 
+        # ORCH-3: Validate initial_state against state_schema before the run starts.
+        # Unknown keys in initial_state silently corrupt downstream state; reject early.
+        if initial_state and isinstance(initial_state, dict) and state_schema:
+            declared_keys = set(state_schema.keys())
+            unknown_keys = set(initial_state.keys()) - declared_keys
+            if unknown_keys:
+                raise ValueError(
+                    f"initial_state contains keys not declared in state_schema: {sorted(unknown_keys)}. "
+                    f"Declared keys: {sorted(declared_keys)}"
+                )
+
         # Try to resume from saved STM when a session_id is provided
         current_state: Dict[str, Any] = {}
         if session_id:

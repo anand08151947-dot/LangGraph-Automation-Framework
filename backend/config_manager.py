@@ -6,9 +6,36 @@ Supports environment overrides, dynamic reload, and schema validation.
 
 import os
 import json
+import re
 import threading
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, ValidationError
+
+_ENV_VAR_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}')
+
+
+def _substitute_env_vars(obj: Any) -> Any:
+    """Recursively replace ${ENV_VAR_NAME} tokens in string values.
+
+    Raises ValueError at load time if a referenced variable is not set,
+    keeping secrets out of config files (CFG-1).
+    """
+    if isinstance(obj, str):
+        def _replace(match: re.Match) -> str:
+            var_name = match.group(1)
+            value = os.environ.get(var_name)
+            if value is None:
+                raise ValueError(
+                    f"Config references undefined environment variable: ${{{var_name}}}. "
+                    f"Set the variable before starting the API."
+                )
+            return value
+        return _ENV_VAR_RE.sub(_replace, obj)
+    if isinstance(obj, dict):
+        return {k: _substitute_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_substitute_env_vars(v) for v in obj]
+    return obj
 
 class ConfigSchema(BaseModel):
     memory: Optional[dict] = None
@@ -47,6 +74,8 @@ class ConfigManager:
         merged = {**config, **env_overrides}
         # Remove environments key from merged config
         merged.pop("environments", None)
+        # CFG-1: substitute ${ENV_VAR_NAME} tokens in all string values
+        merged = _substitute_env_vars(merged)
         # Validate config
         try:
             self.schema.parse_obj(merged)

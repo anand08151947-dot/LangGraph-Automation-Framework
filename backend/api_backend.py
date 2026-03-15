@@ -387,6 +387,7 @@ llm_translator = LLMTranslator(
     mode=llm_mode,
     lm_studio_url=lm_studio_cfg.get("url"),
     lm_studio_model=lm_studio_cfg.get("model"),
+    openai_model=config_mgr.get("llm", {}).get("model"),  # LLM-1: model from config
 )
 
 # --- Memory Management Endpoints ---

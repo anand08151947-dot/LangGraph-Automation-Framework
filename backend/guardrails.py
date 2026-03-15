@@ -304,12 +304,10 @@ def apply_guardrails(
             if action == "block":
                 raise GuardrailViolation("harmful_content", msg)
             elif action == "redact":
-                lower = result.lower()
+                # GUARD-3 fix: use regex sub on the live `result` so each substitution
+                # is applied to the already-redacted text, preventing missed matches.
                 for kw in matches:
-                    idx = lower.find(kw)
-                    if idx >= 0:
-                        result = result[:idx] + "[HARMFUL_REDACTED]" + result[idx + len(kw):]
-                        lower = result.lower()
+                    result = re.sub(re.escape(kw), "[HARMFUL_REDACTED]", result, flags=re.IGNORECASE)
 
     # ── Self-harm ──────────────────────────────────────────────────────────────
     sh_cfg = guardrails_config.get("self_harm") or {}

@@ -27,6 +27,7 @@ class MemoryManager:
         else:
             self._stm = {}
         self._stm_lock = threading.Lock()
+        self._ltm_lock = threading.Lock()  # MEM-3: serialise all LTM write operations
         self.max_stm_entries = max_stm_entries  # MM-2: eviction limit
         # LTM: SQLite DB for session history
         self.ltm_backend = ltm_backend
@@ -59,41 +60,64 @@ class MemoryManager:
 
     # --- LTM Methods ---
     def _init_sqlite(self):
-        conn = sqlite3.connect(self.ltm_path)
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS ltm (
-            session_id TEXT,
-            step_idx INTEGER,
-            step_context TEXT,
-            timestamp REAL DEFAULT 0
-        )''')
-        # MM-3: migration — add timestamp column to existing tables
         try:
-            c.execute('ALTER TABLE ltm ADD COLUMN timestamp REAL DEFAULT 0')
-        except sqlite3.OperationalError:
-            pass  # column already exists
-        conn.commit()
-        conn.close()
+            conn = sqlite3.connect(self.ltm_path)
+            c = conn.cursor()
+            c.execute('''CREATE TABLE IF NOT EXISTS ltm (
+                session_id TEXT,
+                step_idx INTEGER,
+                step_context TEXT,
+                timestamp REAL DEFAULT 0
+            )''')
+            # MM-3: migration — add timestamp column to existing tables
+            try:
+                c.execute('ALTER TABLE ltm ADD COLUMN timestamp REAL DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass  # column already exists
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as exc:
+            import logging as _log
+            _log.getLogger(__name__).error("LTM SQLite init failed: %s", exc)
+            raise
 
     def append_ltm(self, session_id: str, step_context: Dict[str, Any]):
         if self.ltm_backend == 'sqlite':
-            conn = sqlite3.connect(self.ltm_path)
-            c = conn.cursor()
-            idx = self._get_next_step_idx(session_id, c)
-            now = time.time()
-            c.execute(
-                'INSERT INTO ltm (session_id, step_idx, step_context, timestamp) VALUES (?, ?, ?, ?)',
-                (session_id, idx, json.dumps(step_context), now)
-            )
-            # MM-3: prune rows older than ltm_ttl_days
-            if self.ltm_ttl_days > 0:
-                cutoff = now - (self.ltm_ttl_days * 86400)
-                c.execute(
-                    'DELETE FROM ltm WHERE session_id=? AND timestamp > 0 AND timestamp < ?',
-                    (session_id, cutoff)
+            # MEM-4: ensure step_context is JSON-serializable; fall back to str repr
+            try:
+                context_str = json.dumps(step_context)
+            except (TypeError, ValueError):
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "LTM step_context for session %s is not JSON-serializable; using str()", session_id
                 )
-            conn.commit()
-            conn.close()
+                context_str = json.dumps({k: str(v) for k, v in step_context.items()})
+            # MEM-3: serialise writes with a lock; MEM-2: wrap in try/except
+            with self._ltm_lock:
+                try:
+                    conn = sqlite3.connect(self.ltm_path)
+                    c = conn.cursor()
+                    idx = self._get_next_step_idx(session_id, c)
+                    now = time.time()
+                    c.execute(
+                        'INSERT INTO ltm (session_id, step_idx, step_context, timestamp) VALUES (?, ?, ?, ?)',
+                        (session_id, idx, context_str, now)
+                    )
+                    # MM-3: prune rows older than ltm_ttl_days
+                    if self.ltm_ttl_days > 0:
+                        cutoff = now - (self.ltm_ttl_days * 86400)
+                        c.execute(
+                            'DELETE FROM ltm WHERE session_id=? AND timestamp > 0 AND timestamp < ?',
+                            (session_id, cutoff)
+                        )
+                    conn.commit()
+                    conn.close()
+                except sqlite3.Error as exc:
+                    import logging as _log
+                    _log.getLogger(__name__).error(
+                        "LTM append failed for session %s: %s", session_id, exc
+                    )
+                    raise MemoryError(f"LTM write error for session {session_id}: {exc}") from exc
 
     def _get_next_step_idx(self, session_id: str, c) -> int:
         c.execute('SELECT MAX(step_idx) FROM ltm WHERE session_id=?', (session_id,))
@@ -102,32 +126,42 @@ class MemoryManager:
 
     def load_ltm(self, session_id: str) -> List[Dict[str, Any]]:
         if self.ltm_backend == 'sqlite':
-            conn = sqlite3.connect(self.ltm_path)
-            c = conn.cursor()
-            c.execute('SELECT step_context FROM ltm WHERE session_id=? ORDER BY step_idx', (session_id,))
-            rows = c.fetchall()
-            conn.close()
-            return [json.loads(r[0]) for r in rows]
+            try:
+                conn = sqlite3.connect(self.ltm_path)
+                c = conn.cursor()
+                c.execute('SELECT step_context FROM ltm WHERE session_id=? ORDER BY step_idx', (session_id,))
+                rows = c.fetchall()
+                conn.close()
+                return [json.loads(r[0]) for r in rows]
+            except sqlite3.Error as exc:
+                import logging as _log
+                _log.getLogger(__name__).error("LTM load failed for session %s: %s", session_id, exc)
+                raise MemoryError(f"LTM read error for session {session_id}: {exc}") from exc
         return []
 
     def query_ltm(self, session_id: str, keyword: str = "", limit: int = 10) -> List[str]:
         """Full-text keyword search over LTM entries. Returns matching step_context strings."""
         if self.ltm_backend == 'sqlite':
-            conn = sqlite3.connect(self.ltm_path)
-            c = conn.cursor()
-            if keyword:
-                c.execute(
-                    'SELECT step_context FROM ltm WHERE session_id=? AND step_context LIKE ? ORDER BY step_idx DESC LIMIT ?',
-                    (session_id, f"%{keyword}%", limit)
-                )
-            else:
-                c.execute(
-                    'SELECT step_context FROM ltm WHERE session_id=? ORDER BY step_idx DESC LIMIT ?',
-                    (session_id, limit)
-                )
-            rows = c.fetchall()
-            conn.close()
-            return [r[0] for r in rows]
+            try:
+                conn = sqlite3.connect(self.ltm_path)
+                c = conn.cursor()
+                if keyword:
+                    c.execute(
+                        'SELECT step_context FROM ltm WHERE session_id=? AND step_context LIKE ? ORDER BY step_idx DESC LIMIT ?',
+                        (session_id, f"%{keyword}%", limit)
+                    )
+                else:
+                    c.execute(
+                        'SELECT step_context FROM ltm WHERE session_id=? ORDER BY step_idx DESC LIMIT ?',
+                        (session_id, limit)
+                    )
+                rows = c.fetchall()
+                conn.close()
+                return [r[0] for r in rows]
+            except sqlite3.Error as exc:
+                import logging as _log
+                _log.getLogger(__name__).error("LTM query failed for session %s: %s", session_id, exc)
+                return []
         return []
 
     def get_stats(self, session_id: str) -> Dict[str, Any]:
@@ -136,20 +170,30 @@ class MemoryManager:
         stm_keys = list(stm_state.keys()) if stm_state else []
         ltm_count = 0
         if self.ltm_backend == 'sqlite':
-            conn = sqlite3.connect(self.ltm_path)
-            c = conn.cursor()
-            c.execute('SELECT COUNT(*) FROM ltm WHERE session_id=?', (session_id,))
-            ltm_count = c.fetchone()[0]
-            conn.close()
+            try:
+                conn = sqlite3.connect(self.ltm_path)
+                c = conn.cursor()
+                c.execute('SELECT COUNT(*) FROM ltm WHERE session_id=?', (session_id,))
+                ltm_count = c.fetchone()[0]
+                conn.close()
+            except sqlite3.Error as exc:
+                import logging as _log
+                _log.getLogger(__name__).error("LTM stats failed for session %s: %s", session_id, exc)
         return {"session_id": session_id, "stm_keys": stm_keys, "ltm_entry_count": ltm_count}
 
     def reset_ltm(self, session_id: str):
         if self.ltm_backend == 'sqlite':
-            conn = sqlite3.connect(self.ltm_path)
-            c = conn.cursor()
-            c.execute('DELETE FROM ltm WHERE session_id=?', (session_id,))
-            conn.commit()
-            conn.close()
+            with self._ltm_lock:  # MEM-3: lock write
+                try:
+                    conn = sqlite3.connect(self.ltm_path)
+                    c = conn.cursor()
+                    c.execute('DELETE FROM ltm WHERE session_id=?', (session_id,))
+                    conn.commit()
+                    conn.close()
+                except sqlite3.Error as exc:
+                    import logging as _log
+                    _log.getLogger(__name__).error("LTM reset failed for session %s: %s", session_id, exc)
+                    raise MemoryError(f"LTM reset error for session {session_id}: {exc}") from exc
 
 # Example usage:
 # mm = MemoryManager()

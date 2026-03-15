@@ -26,12 +26,18 @@ LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "local-model")
 
 class LLMTranslator:
     """Translator with pluggable modes: 'openai', 'lm_studio', or 'manual'."""
+    # LLM-1: default model read from env var; falls back to a stable GPT-4 model
+    DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4-1106-preview")
+
     def __init__(self, schema_path: str = SCHEMA_PATH, openai_api_key: Optional[str] = None, mode: str = "openai",
-                 lm_studio_url: Optional[str] = None, lm_studio_model: Optional[str] = None):
+                 lm_studio_url: Optional[str] = None, lm_studio_model: Optional[str] = None,
+                 openai_model: Optional[str] = None):
         self.schema = self._load_schema(schema_path)
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
         openai.api_key = self.openai_api_key
         self.mode = mode.lower()
+        # LLM-1: configurable OpenAI model (constructor arg > env var > default)
+        self.openai_model = openai_model or self.DEFAULT_OPENAI_MODEL
         # Derive base URL so we can build both endpoints from one config value
         base = (lm_studio_url or os.getenv("LM_STUDIO_BASE_URL", LM_STUDIO_BASE_URL)).rstrip("/")
         if "/v1/" in base:
@@ -189,7 +195,7 @@ class LLMTranslator:
         for attempt in range(retries + 1):
             try:
                 response = openai.ChatCompletion.create(
-                    model="gpt-4-1106-preview",
+                    model=self.openai_model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.2,
                 )
@@ -234,7 +240,7 @@ class LLMTranslator:
         for attempt in range(retries + 1):
             try:
                 response = openai.ChatCompletion.create(
-                    model="gpt-4-1106-preview",
+                    model=self.openai_model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.2,
                 )
