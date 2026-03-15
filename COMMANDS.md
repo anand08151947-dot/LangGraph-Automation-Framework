@@ -193,7 +193,29 @@ Get-Content "backend\artifacts\<run_id>\validation_report.json"
 
 ---
 
-## 10 · Useful One-Liners
+## 10 · Port Management
+
+```powershell
+# Find which process is holding a port (e.g. 3000)
+$port = 3000
+$procId = (netstat -ano | Select-String ":$port\s" | Select-Object -First 1).ToString().Trim().Split()[-1]
+if ($procId) { Get-Process -Id $procId | Select-Object Id, ProcessName, CPU } else { Write-Host "No process on port $port" }
+
+# Kill the process holding a port (e.g. 3000)
+$port = 3000
+$procId = (netstat -ano | Select-String ":$port\s" | Select-Object -First 1).ToString().Trim().Split()[-1]
+if ($procId) { Stop-Process -Id $procId -Force; Write-Host "Killed PID $procId (was on port $port)" } else { Write-Host "No process on port $port" }
+
+# One-liner: kill port 3000
+Stop-Process -Id ((netstat -ano | Select-String ':3000\s')[0].ToString().Trim().Split()[-1]) -Force
+
+# One-liner: kill port 8000
+Stop-Process -Id ((netstat -ano | Select-String ':8000\s')[0].ToString().Trim().Split()[-1]) -Force
+```
+
+---
+
+## 11 · Useful One-Liners
 
 ```powershell
 # Tail backend logs (if writing to a file)

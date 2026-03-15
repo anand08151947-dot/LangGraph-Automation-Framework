@@ -1131,8 +1131,10 @@ class CodeGenerator:
         """Generate a self-contained MemoryManager with STM eviction (MM-2) and LTM TTL (MM-3)."""
         stm = memory_cfg.get("short_term", {}) if memory_cfg else {}
         ltm = memory_cfg.get("long_term", {}) if memory_cfg else {}
-        max_entries = int(stm.get("max_entries", 0))
-        ttl_days = float(ltm.get("ttl_days", 0))
+        # Support both camelCase (stmMaxEntries) and snake_case (max_entries) field names
+        max_entries = int(stm.get("stmMaxEntries", stm.get("max_entries", 0)))
+        # Support both camelCase (ltmTtlDays) and snake_case (ttl_days) field names
+        ttl_days = float(ltm.get("ltmTtlDays", ltm.get("ttl_days", 0)))
         ltm_path = ltm.get("path", "ltm.db")
 
         return [
@@ -1221,7 +1223,10 @@ class CodeGenerator:
         trace_nodes = bool(obs_hooks.get("trace_nodes", True))
         log_transitions = bool(obs_hooks.get("log_state_transitions", True))
         capture_outputs = bool(obs_hooks.get("capture_agent_outputs", True))
-        max_iter = int((config.get("runtime") or {}).get("max_iterations", 20))
+        runtime_cfg = config.get("runtime") or {}
+        max_iter = int(runtime_cfg.get("max_iterations", 20))
+        timeout_seconds = float(runtime_cfg.get("timeout_seconds", 0))  # 0 = no wall-clock limit
+        error_policy = str(runtime_cfg.get("error_policy", "stop"))     # "continue" | "stop"
         max_retries = int(retry_policy.get("max_retries", 3))
         backoff_strategy = retry_policy.get("backoff_strategy", "fixed")
         backoff_base = float(retry_policy.get("backoff_base_seconds", 1.0))
@@ -1232,6 +1237,7 @@ class CodeGenerator:
             "# ── Workflow Runner ──────────────────────────────────────────────────────",
             f"# LLM retry: max={max_retries}, backoff={backoff_strategy}, base={backoff_base}s (baked into call_llm)",
             f"# Observability: trace_nodes={trace_nodes}, log_transitions={log_transitions}, capture_outputs={capture_outputs}",
+            f"# Runtime: max_iterations={max_iter}, timeout_seconds={timeout_seconds or 'unlimited'}, error_policy={error_policy!r}",
             "def run_workflow(initial_state: dict, session_id: str = 'run-001',",
             "                 resume: bool = False) -> dict:",
             '    """Run (or resume) the workflow, saving STM/LTM at every step.',
@@ -1255,27 +1261,37 @@ class CodeGenerator:
             "        state = dict(initial_state)",
             "",
             f"    MAX_ITER = {max_iter}",
+            f"    _TIMEOUT_SEC = {timeout_seconds}  # 0 = no limit",
+            f"    _ERROR_POLICY = {error_policy!r}  # 'continue' swallows node errors; 'stop' re-raises",
             "    step_idx = 0",
+            "    _run_start = time.time()",
             "",
         ]
 
-        # Build the graph.stream() call — pass thread_id if checkpointing is enabled
+        # Build the graph.stream() call — wrap in error policy + timeout handling
+        stream_open = "    for step_output in graph.stream(state, config=_stream_cfg):" if checkpointing_enabled \
+                      else "    for step_output in graph.stream(state):"
         if checkpointing_enabled:
             lines += [
                 "    # GRAPH-3: pass thread_id so SqliteSaver checkpointer scopes state to this session",
                 "    _stream_cfg = {'configurable': {'thread_id': session_id}} if _checkpointer else None",
-                "    for step_output in graph.stream(state, config=_stream_cfg):",
-                "        for node_name, node_updates in step_output.items():",
-                "            if isinstance(node_updates, dict):",
-                "                state.update(node_updates)",
             ]
-        else:
-            lines += [
-                "    for step_output in graph.stream(state):",
-                "        for node_name, node_updates in step_output.items():",
-                "            if isinstance(node_updates, dict):",
-                "                state.update(node_updates)",
-            ]
+        lines += [
+            f"    {stream_open.strip()}",
+            "        # Timeout: abort if wall-clock time exceeds runtime.timeout_seconds",
+            "        if _TIMEOUT_SEC > 0 and (time.time() - _run_start) > _TIMEOUT_SEC:",
+            "            print(f'[TIMEOUT] Workflow exceeded {_TIMEOUT_SEC}s — stopping at step {step_idx}')",
+            "            break",
+            "        for node_name, node_updates in step_output.items():",
+            "            try:",
+            "                if isinstance(node_updates, dict):",
+            "                    state.update(node_updates)",
+            "            except Exception as _node_exc:",
+            "                if _ERROR_POLICY == 'continue':",
+            "                    print(f'[ERROR:{node_name}] {_node_exc!r} — error_policy=continue, proceeding')",
+            "                else:",
+            "                    raise",
+        ]
 
         # Observability — log_state_transitions: print step summary
         if log_transitions:
@@ -1621,11 +1637,11 @@ class CodeGenerator:
                        "fail", "workflow.set_entry_point() call not found or uses wrong node ID")
 
         # ── 7. graph.compile() present ───────────────────────────────────
-        if "graph = workflow.compile()" in code_joined:
+        if "workflow.compile(" in code_joined:
             _check("compile", "Graph", "workflow.compile() called", "pass")
         else:
             _check("compile", "Graph", "workflow.compile() missing",
-                   "fail", "graph = workflow.compile() not found — graph won't be runnable")
+                   "fail", "workflow.compile() not found — graph won't be runnable")
 
         # ── 8. State schema coverage ─────────────────────────────────────
         missing_fields = []
@@ -1645,8 +1661,8 @@ class CodeGenerator:
         for n in nodes:
             nid = n.get("id", "")
             node_type = n.get("type", "")
-            if node_type in ("human", "checkpoint"):
-                continue  # no LLM call expected
+            if node_type in ("human", "checkpoint", "human_node"):
+                continue  # no LLM call expected for human nodes
             func_name = f"node_{nid.lower()}"
             # Find the function body in code
             in_func = False
