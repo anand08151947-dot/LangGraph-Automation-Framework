@@ -1,6 +1,92 @@
 import subprocess
 import json
-from typing import Dict, Any, List
+import urllib.request
+import urllib.parse
+import urllib.error
+import threading
+from typing import Dict, Any, List, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# MCPClient — connects to an MCP server and discovers its tools via the
+# official JSON-RPC tools/list protocol (MCP-1).  Supports stdio, SSE, and
+# HTTP transport (MCP-2) with optional credential/auth headers (MCP-3).
+# ---------------------------------------------------------------------------
+
+_JSONRPC_TOOLS_LIST = json.dumps(
+    {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+).encode()
+
+
+def _build_auth_headers(auth_cfg: Dict[str, Any]) -> Dict[str, str]:
+    """MCP-3: Build HTTP auth headers from the server's auth config block.
+
+    Supported auth types:
+      bearer   — Authorization: Bearer <token>
+      api_key  — configurable header name (default: X-API-Key)
+      basic    — Authorization: Basic base64(user:password)
+    """
+    headers: Dict[str, str] = {}
+    if not auth_cfg:
+        return headers
+    auth_type = auth_cfg.get("type", "").lower()
+    if auth_type == "bearer":
+        token = auth_cfg.get("token", "")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    elif auth_type == "api_key":
+        key = auth_cfg.get("key", "")
+        header = auth_cfg.get("header", "X-API-Key")
+        if key:
+            headers[header] = key
+    elif auth_type == "basic":
+        import base64
+        user = auth_cfg.get("username", "")
+        pwd  = auth_cfg.get("password", "")
+        encoded = base64.b64encode(f"{user}:{pwd}".encode()).decode()
+        headers["Authorization"] = f"Basic {encoded}"
+    return headers
+
+
+def _http_jsonrpc_tools_list(
+    url: str,
+    headers: Dict[str, str],
+    timeout: int = 10,
+) -> Tuple[List[str], Dict[str, Any]]:
+    """MCP-2 / MCP-1: POST JSON-RPC tools/list to an HTTP MCP endpoint.
+
+    Returns (tool_names, tool_schemas).
+    """
+    all_headers = {"Content-Type": "application/json"}
+    all_headers.update(headers)
+    req = urllib.request.Request(url, data=_JSONRPC_TOOLS_LIST, headers=all_headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+        data = json.loads(body)
+        tools = data.get("result", {}).get("tools", [])
+        names = [t["name"] for t in tools if "name" in t]
+        schemas = {t["name"]: t.get("inputSchema", {}) for t in tools if "name" in t}
+        return names, schemas
+    except Exception:
+        return [], {}
+
+
+def _sse_jsonrpc_tools_list(
+    base_url: str,
+    headers: Dict[str, str],
+    timeout: int = 10,
+) -> Tuple[List[str], Dict[str, Any]]:
+    """MCP-2 / MCP-1: Discover tools from an SSE-transport MCP server.
+
+    MCP SSE servers expose two endpoints:
+      GET  <base_url>/sse      — server-sent event stream (for server→client push)
+      POST <base_url>/messages — client→server JSON-RPC messages
+
+    We POST tools/list to /messages and read the one-shot JSON response.
+    """
+    messages_url = base_url.rstrip("/") + "/messages"
+    return _http_jsonrpc_tools_list(messages_url, headers, timeout=timeout)
 
 
 # Simulated MCP client for demonstration
@@ -8,41 +94,82 @@ class MCPClient:
     def __init__(self, server_name: str, server_config: Dict[str, Any]):
         self.server_name = server_name
         self.server_config = server_config
+        self.tool_schemas: Dict[str, Any] = {}
         self.tools = self._discover_tools()
 
     def _discover_tools(self) -> List[str]:
-        """Discover tools available on this MCP server.
+        """MCP-1/2: Discover tools available on this MCP server using the
+        official JSON-RPC tools/list protocol.
 
         Supports server types: stdio, sse, http.
-        Falls back to simulated tools when real discovery fails.
+        Falls back to empty list (no simulated tools) when real discovery fails.
         """
         stype = self.server_config.get("type", "")
+        auth_headers = _build_auth_headers(self.server_config.get("auth") or {})
 
         if stype == "stdio":
-            # Run the MCP server process and ask it to list tools
+            # MCP-1: send JSON-RPC tools/list via stdin/stdout of the server process
             cmd = [self.server_config["command"]] + self.server_config.get("args", [])
+            env_overrides = self.server_config.get("env") or {}
             try:
-                result = subprocess.run(
-                    cmd + ["--list-tools"],
-                    capture_output=True, text=True, timeout=10,
+                import os
+                env = {**os.environ, **env_overrides}
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
                 )
-                return json.loads(result.stdout)
+                stdout_data, _ = proc.communicate(
+                    input=_JSONRPC_TOOLS_LIST + b"\n", timeout=10
+                )
+                # The response may be the first complete JSON line
+                for line in stdout_data.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        tools = data.get("result", {}).get("tools", [])
+                        names = [t["name"] for t in tools if "name" in t]
+                        self.tool_schemas = {
+                            t["name"]: t.get("inputSchema", {})
+                            for t in tools if "name" in t
+                        }
+                        return names
+                    except json.JSONDecodeError:
+                        continue
             except Exception:
-                return ["simulated_tool_1", "simulated_tool_2"]
+                pass
+            return []
 
         elif stype == "sse":
-            # SSE endpoint — tool discovery would use SSE protocol
-            return ["simulated_sse_tool_1", "simulated_sse_tool_2"]
+            # MCP-2: SSE transport — POST tools/list to the /messages endpoint
+            base_url = self.server_config.get("url", "")
+            if not base_url:
+                return []
+            names, schemas = _sse_jsonrpc_tools_list(base_url, auth_headers)
+            self.tool_schemas = schemas
+            return names
 
-        elif stype == "http":
-            # HTTP endpoint — register the endpoint URL itself as the tool name
-            endpoint = self.server_config.get("endpoint", "")
-            return [endpoint] if endpoint else [f"{self.server_name}_http_tool"]
+        elif stype in ("http", "rest"):
+            # MCP-2: HTTP transport — POST JSON-RPC tools/list directly
+            endpoint = self.server_config.get("endpoint", "") or self.server_config.get("url", "")
+            if not endpoint:
+                return [f"{self.server_name}_http_tool"]
+            names, schemas = _http_jsonrpc_tools_list(endpoint, auth_headers)
+            self.tool_schemas = schemas
+            return names
 
         return []
 
     def get_tools(self) -> List[str]:
         return self.tools
+
+    def get_tool_schema(self, tool_name: str) -> Dict[str, Any]:
+        """Return the inputSchema for a specific tool, or {} if not found."""
+        return self.tool_schemas.get(tool_name, {})
 
 
 class MCPAutoBinder:

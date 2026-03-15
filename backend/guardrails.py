@@ -423,6 +423,18 @@ def validate_output(
             return False, f"{prefix}Missing required fields: {missing}", parsed
 
     # ── Validation rules ───────────────────────────────────────────────────────
+    # GUARD-1: replaced eval() with a safe whitelist comparison to prevent
+    # code-injection via operator or value fields in the rule config.
+    _SAFE_OPS = {
+        "==": lambda a, b: a == b,
+        "!=": lambda a, b: a != b,
+        "<":  lambda a, b: a < b,
+        "<=": lambda a, b: a <= b,
+        ">":  lambda a, b: a > b,
+        ">=": lambda a, b: a >= b,
+        "in": lambda a, b: a in b,
+        "not in": lambda a, b: a not in b,
+    }
     rules = output_schema.get("validation", {}).get("rules") or []
     for rule in rules:
         field = rule.get("field", "")
@@ -430,9 +442,11 @@ def validate_output(
         expected = rule.get("value")
         if isinstance(parsed, dict) and field in parsed:
             actual = parsed[field]
+            cmp_fn = _SAFE_OPS.get(operator)
+            if cmp_fn is None:
+                continue  # unknown operator — skip silently (was eval-able before)
             try:
-                ok = eval(f"{actual!r} {operator} {expected!r}",  # noqa: S307
-                          {"__builtins__": {}}, {})
+                ok = cmp_fn(actual, expected)
                 if not ok:
                     return (
                         False,
@@ -441,7 +455,7 @@ def validate_output(
                         parsed,
                     )
             except Exception:
-                pass  # Skip unparseable rules
+                pass  # Skip if comparison raises (e.g., incompatible types)
 
     return True, None, parsed
 
@@ -758,17 +772,44 @@ def apply_input_guardrails(
                     + f"\n\n[...{omitted} chars omitted by context_length guardrail...]\n\n"
                     + result[-keep_end:]
                 )
-            # "summarize" — placeholder: in production, call a summarisation LLM
-            # For now it falls through to truncate behaviour
+            # GUARD-2: Extractive summarization — pick highest-scoring sentences
+            # using word-frequency scoring (TF-like) until budget is filled.
             elif on_exceed == "summarize":
-                keep_start = int(max_chars * 0.60)
-                keep_end   = max_chars - keep_start
-                omitted = len(result) - max_chars
-                result = (
-                    result[:keep_start]
-                    + f"\n\n[...{omitted} chars summarised by context_length guardrail...]\n\n"
-                    + result[-keep_end:]
-                )
+                import re as _re
+                # Sentence-split (period/exclamation/question followed by space or end)
+                _sent_re = _re.compile(r'(?<=[.!?])\s+')
+                sentences = _sent_re.split(result)
+                if len(sentences) <= 1:
+                    # Can't split — fall back to truncation
+                    result = result[:max_chars]
+                else:
+                    # Word-frequency scoring
+                    words = _re.findall(r'\w+', result.lower())
+                    freq: dict = {}
+                    for w in words:
+                        freq[w] = freq.get(w, 0) + 1
+                    max_freq = max(freq.values()) or 1
+                    norm_freq = {w: f / max_freq for w, f in freq.items()}
+
+                    def _score(sent: str) -> float:
+                        ws = _re.findall(r'\w+', sent.lower())
+                        return sum(norm_freq.get(w, 0) for w in ws) / max(len(ws), 1)
+
+                    # Sort sentences by score descending; preserve order while filling budget
+                    scored = sorted(
+                        enumerate(sentences), key=lambda t: _score(t[1]), reverse=True
+                    )
+                    budget = max_chars - 80  # leave room for header
+                    selected: list = []
+                    for idx, sent in scored:
+                        if budget <= 0:
+                            break
+                        selected.append((idx, sent))
+                        budget -= len(sent) + 1
+                    # Reconstruct in original order
+                    selected.sort(key=lambda t: t[0])
+                    summary = " ".join(s for _, s in selected)
+                    result = f"[Summarized from {len(result)} chars]\n{summary}"
 
     return result
 

@@ -67,10 +67,22 @@ class LocalFileRagProvider(RagProvider):
         if not os.path.isdir(self.directory):
             return []
 
-        words = [w.lower() for w in query.split() if w]
-        matches: List[str] = []
+        # RAG-1: TF-IDF relevance scoring instead of plain keyword match
+        import math
+        import re as _re
 
-        for fname in os.listdir(self.directory):
+        _tok = _re.compile(r'\w+')
+
+        def _tokenize(text: str) -> List[str]:
+            return [t.lower() for t in _tok.findall(text)]
+
+        query_terms = set(_tokenize(query))
+        if not query_terms:
+            return []
+
+        # Collect all paragraphs across files
+        paragraphs: List[str] = []
+        for fname in sorted(os.listdir(self.directory)):
             if not (fname.endswith(".txt") or fname.endswith(".md")):
                 continue
             fpath = os.path.join(self.directory, fname)
@@ -79,18 +91,47 @@ class LocalFileRagProvider(RagProvider):
                     content = fh.read()
             except OSError:
                 continue
-
             for para in content.split("\n\n"):
                 para = para.strip()
-                if not para:
-                    continue
-                lower_para = para.lower()
-                if any(w in lower_para for w in words):
-                    matches.append(para)
-                    if len(matches) >= top_k:
-                        return matches
+                if para:
+                    paragraphs.append(para)
 
-        return matches[:top_k]
+        if not paragraphs:
+            return []
+
+        # Build document-frequency counts for IDF
+        N = len(paragraphs)
+        df: dict = {}
+        tokenized_paragraphs = [_tokenize(p) for p in paragraphs]
+        for tokens in tokenized_paragraphs:
+            for term in set(tokens):
+                df[term] = df.get(term, 0) + 1
+
+        # Score each paragraph using TF-IDF for query terms
+        scored: List[tuple] = []
+        for idx, (para, tokens) in enumerate(zip(paragraphs, tokenized_paragraphs)):
+            if not tokens:
+                continue
+            score = 0.0
+            tf_denom = len(tokens)
+            for term in query_terms:
+                tf = tokens.count(term) / tf_denom
+                idf = math.log((N + 1) / (df.get(term, 0) + 1)) + 1.0
+                score += tf * idf
+            if score > 0:
+                scored.append((score, idx))
+
+        # Sort by score descending, apply threshold, return top_k
+        scored.sort(key=lambda t: t[0], reverse=True)
+        results: List[str] = []
+        for score, idx in scored:
+            if score_threshold > 0.0 and score < score_threshold:
+                continue
+            results.append(paragraphs[idx])
+            if len(results) >= top_k:
+                break
+
+        return results
 
 
 class ChromaRagProvider(RagProvider):
