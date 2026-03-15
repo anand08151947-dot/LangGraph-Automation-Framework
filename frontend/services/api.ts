@@ -181,3 +181,36 @@ export const getRegisteredTools = async (): Promise<any[]> => {
   const res = await api.get<any[]>('/tools');
   return res.data;
 };
+
+// CFG-5 / FE-BUILD-6: Validate workflow config before orchestration
+export const validateConfig = async (config_json: any): Promise<{ valid: boolean; errors?: string[]; detail?: string }> => {
+  const res = await api.post('/config/validate', { config_json });
+  return res.data;
+};
+
+// MCP-7: Tool management API functions
+export const listTools = async (): Promise<any> => {
+  const res = await api.get('/tools');
+  return res.data;
+};
+
+export const registerTool = async (tool: { name: string; description?: string; version?: string; health_url?: string; [key: string]: any }): Promise<any> => {
+  const res = await api.post('/tools/register', tool);
+  return res.data;
+};
+
+export const unregisterTool = async (name: string): Promise<any> => {
+  const res = await api.post('/tools/unregister', { name });
+  return res.data;
+};
+
+export const checkToolHealth = async (): Promise<any> => {
+  const res = await api.get('/tools/health');
+  return res.data;
+};
+
+// FE-UX-7: Template versioning
+export const getTemplateDiff = async (name: string, v1: string, v2: string): Promise<any> => {
+  const res = await api.get(`/templates/diff/${encodeURIComponent(name)}/${encodeURIComponent(v1)}/${encodeURIComponent(v2)}`);
+  return res.data;
+};

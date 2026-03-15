@@ -27,10 +27,79 @@ Actions per check:
 import re
 import json
 import logging
+import threading
 import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# GUARD-6: Violation persistence (module-level)
+# ---------------------------------------------------------------------------
+
+_violation_db_path: Optional[str] = None
+_violation_lock = threading.Lock()
+_violation_db_conn = None
+
+
+def configure_violation_persistence(db_path: str):
+    """Create SQLite DB and violations table for persisting guardrail violations."""
+    import sqlite3 as _sqlite3
+    global _violation_db_path, _violation_db_conn
+    _violation_db_path = db_path
+    _violation_db_conn = _sqlite3.connect(db_path, check_same_thread=False)
+    with _violation_lock:
+        _violation_db_conn.execute(
+            "CREATE TABLE IF NOT EXISTS violations("
+            "id INTEGER PRIMARY KEY, ts REAL, session_id TEXT, run_id TEXT, "
+            "check_name TEXT, action TEXT, content_hash TEXT)"
+        )
+        _violation_db_conn.commit()
+
+
+def _record_violation(session_id: str, run_id: str, check_name: str, action: str, content: str):
+    """Hash content and insert a violation row (thread-safe)."""
+    import hashlib
+    import time as _time
+    if _violation_db_conn is None:
+        return
+    try:
+        content_hash = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
+        with _violation_lock:
+            _violation_db_conn.execute(
+                "INSERT INTO violations(ts, session_id, run_id, check_name, action, content_hash) "
+                "VALUES (?,?,?,?,?,?)",
+                (_time.time(), session_id, run_id, check_name, action, content_hash),
+            )
+            _violation_db_conn.commit()
+    except Exception:
+        pass
+
+
+def get_violations(session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return violation records, optionally filtered by session_id."""
+    if _violation_db_conn is None:
+        return []
+    try:
+        with _violation_lock:
+            if session_id:
+                cur = _violation_db_conn.execute(
+                    "SELECT id, ts, session_id, run_id, check_name, action, content_hash "
+                    "FROM violations WHERE session_id=?", (session_id,)
+                )
+            else:
+                cur = _violation_db_conn.execute(
+                    "SELECT id, ts, session_id, run_id, check_name, action, content_hash "
+                    "FROM violations"
+                )
+            rows = cur.fetchall()
+        return [
+            {"id": r[0], "ts": r[1], "session_id": r[2], "run_id": r[3],
+             "check_name": r[4], "action": r[5], "content_hash": r[6]}
+            for r in rows
+        ]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +342,8 @@ def apply_guardrails(
     text: str,
     guardrails_config: Dict[str, Any],
     node_id: str = "",
+    session_id: str = "",
+    run_id: str = "",
 ) -> str:
     """Apply all configured guardrails to *text* and return the (possibly
     redacted) result.
@@ -301,7 +372,10 @@ def apply_guardrails(
             msg = f"{prefix}PII detected: {', '.join(findings)}"
             logger.warning("Guardrail [pii] %s", msg)
             if action == "block":
+                _record_violation(session_id, run_id, "pii", action, text)
                 raise GuardrailViolation("pii", msg)
+            else:
+                _record_violation(session_id, run_id, "pii", action, text)
             # approve: already logged, pass through
 
     # ── Harmful content ────────────────────────────────────────────────────────
@@ -313,12 +387,14 @@ def apply_guardrails(
             msg = f"{prefix}Harmful instructions detected: {matches[:3]}"
             logger.warning("Guardrail [harmful_content] %s", msg)
             if action == "block":
+                _record_violation(session_id, run_id, "harmful_content", action, text)
                 raise GuardrailViolation("harmful_content", msg)
             elif action == "redact":
                 # GUARD-3 fix: use regex sub on the live `result` so each substitution
                 # is applied to the already-redacted text, preventing missed matches.
                 for kw in matches:
                     result = re.sub(re.escape(kw), "[HARMFUL_REDACTED]", result, flags=re.IGNORECASE)
+                _record_violation(session_id, run_id, "harmful_content", action, text)
 
     # ── Self-harm ──────────────────────────────────────────────────────────────
     sh_cfg = guardrails_config.get("self_harm") or {}
@@ -328,9 +404,11 @@ def apply_guardrails(
             msg = f"{prefix}Self-harm content detected"
             logger.warning("Guardrail [self_harm] %s", msg)
             if action == "block":
+                _record_violation(session_id, run_id, "self_harm", action, text)
                 raise GuardrailViolation("self_harm", msg)
             elif action == "redact":
                 result = _SELF_HARM_RE.sub("[SELF_HARM_REDACTED]", result)
+                _record_violation(session_id, run_id, "self_harm", action, text)
 
     # ── Hate speech ────────────────────────────────────────────────────────────
     hs_cfg = guardrails_config.get("hate_speech") or {}
@@ -340,9 +418,11 @@ def apply_guardrails(
             msg = f"{prefix}Hate speech detected"
             logger.warning("Guardrail [hate_speech] %s", msg)
             if action == "block":
+                _record_violation(session_id, run_id, "hate_speech", action, text)
                 raise GuardrailViolation("hate_speech", msg)
             elif action == "redact":
                 result = _HATE_SPEECH_RE.sub("[HATE_SPEECH_REDACTED]", result)
+                _record_violation(session_id, run_id, "hate_speech", action, text)
 
     # ── Regulated advice ───────────────────────────────────────────────────────
     ra_cfg = guardrails_config.get("regulated_advice") or {}
@@ -354,12 +434,14 @@ def apply_guardrails(
             msg = f"{prefix}Regulated advice detected: {found_cats}"
             logger.warning("Guardrail [regulated_advice] %s", msg)
             if action == "block":
+                _record_violation(session_id, run_id, "regulated_advice", action, text)
                 raise GuardrailViolation("regulated_advice", msg)
             elif action == "redact":
                 for cat in found_cats:
                     result = _REGULATED_PATTERNS[cat].sub(
                         f"[{cat.upper()}_ADVICE_REDACTED]", result
                     )
+                _record_violation(session_id, run_id, "regulated_advice", action, text)
 
     return result
 

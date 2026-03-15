@@ -56,10 +56,17 @@ def config_summary(request: Request):
 
 @app.post("/config/generate_llm")
 def generate_config_llm(request: dict = Body(...)):
-    # Placeholder: Use LLM to generate config from natural language
+    # API-1: Use LLM to generate config from natural language
     instructions = request.get("instructions")
-    # In production, call LLM here
-    return {"generated_config": {"instructions": instructions, "example": "...LLM output here..."}}
+    mode = request.get("mode", "lm_studio")
+    if not instructions:
+        raise HTTPException(status_code=400, detail="'instructions' field is required")
+    try:
+        translator = LLMTranslator(mode=mode)
+        result = translator.english_to_json(instructions)
+        return {"config_json": result, "status": "generated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/config/simulate")
 def simulate_config(request: dict = Body(...)):
@@ -218,7 +225,8 @@ from memory_manager import MemoryManager
 from observability_manager import ObservabilityManager
 from config_manager import ConfigManager
 from tool_registry import ToolRegistry
-from access_control import AccessControl
+from access_control import AccessControl, RateLimiter
+from guardrails import configure_violation_persistence, get_violations as _get_guardrail_violations
 # --- Access Control Instance (initialized after ConfigManager is ready) ---
 access_control = None
 # --- Tool Registry Instance ---
@@ -348,8 +356,22 @@ access_control = AccessControl(
     jwt_secret=config_mgr.get("api_keys", {}).get("jwt_secret"),  # SEC-1: no fallback; env var required
     user_roles=config_mgr.get("user_roles", {})
 )
+# SEC-7: Rate limiter
+rate_limiter = RateLimiter()
+# GUARD-6: Enable guardrail violation persistence
+_guardrail_db_path = os.path.join(os.path.dirname(__file__), "guardrail_violations.db")
+try:
+    configure_violation_persistence(_guardrail_db_path)
+except Exception as _gv_err:
+    logger.warning(f"Guardrail violation persistence init failed: {_gv_err}")
 # --- Observability Manager Instance ---
 observability = ObservabilityManager(config_mgr.get("observability", {}).get("backends", ["logging"]))
+# OBS-5: Enable SQLite event persistence
+_obs_db_path = os.path.join(os.path.dirname(__file__), "observability_events.db")
+try:
+    observability._enable_event_persistence(_obs_db_path)
+except Exception as _obs_err:
+    logger.warning(f"Observability event persistence init failed: {_obs_err}")
 # --- Orchestrator Instance & Status Store ---
 try:
     orchestrator = Orchestrator()
@@ -537,7 +559,16 @@ def get_template(name: str, version: Optional[str] = None):
 
 @app.post("/customize_template")
 def customize_template(req: CustomizationRequest):
-    # Option 1: Use LLM to translate custom_instructions to JSON (not implemented here)
+    # API-2: Option 1 — Use LLM when custom_instructions provided and no custom_json
+    if req.custom_instructions and not req.custom_json:
+        try:
+            t = template_manager.get_template(req.template_name)
+            base_json = t.data if t else {}
+            mode = config_mgr.get("llm", {}).get("mode", "lm_studio")
+            customized = LLMTranslator(mode=mode).customize_json(base_json, req.custom_instructions)
+            return {"customized_template": customized}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
     # Option 2: Accept custom_json directly
     if req.custom_json:
         return {"customized_template": req.custom_json}
@@ -1296,6 +1327,81 @@ def generate_code_endpoint(req: dict = Body(...)):
         return {'script': script, 'requirements': requirements, 'env_template': env_template}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+# --- OBS-3: Prometheus /metrics endpoint ---
+@app.get("/metrics")
+def get_metrics():
+    try:
+        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from fastapi.responses import Response
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    except ImportError:
+        return {"error": "prometheus_client not installed"}
+
+# --- OBS-5: Events endpoint ---
+@app.get("/events/{session_id}")
+def get_events(session_id: str):
+    """Return persisted observability events for a session."""
+    return {"session_id": session_id, "events": observability.query_events(session_id)}
+
+# --- GUARD-6: Guardrail violations endpoint ---
+@app.get("/guardrail-violations")
+def get_guardrail_violations(request: Request, session_id: Optional[str] = None):
+    """Return guardrail violations (admin only). Optionally filter by ?session_id="""
+    _require_admin(request)
+    return {"violations": _get_guardrail_violations(session_id)}
+
+# --- CFG-4: Templates diff endpoint ---
+@app.get("/templates/diff/{name}/{v1}/{v2}")
+def diff_templates(name: str, v1: str, v2: str):
+    """Return added/removed/modified fields between two template versions."""
+    try:
+        return template_manager.diff_templates(name, v1, v2)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# --- SEC-6: API key rotation endpoint ---
+@app.post("/auth/rotate-key")
+def rotate_api_key(body: dict = Body(...), request: Request = None):
+    """Rotate an API key (admin only). Old key remains valid during grace period."""
+    _require_admin(request)
+    old_key = body.get("old_key")
+    if not old_key:
+        raise HTTPException(status_code=400, detail="'old_key' is required")
+    grace_seconds = int(body.get("grace_seconds", 300))
+    new_key = access_control.rotate_api_key(old_key, grace_seconds)
+    return {"new_key": new_key, "grace_seconds": grace_seconds}
+
+# --- SEC-7: Auth endpoints with rate limiting ---
+@app.post("/auth/login")
+def auth_login(body: dict = Body(...), request: Request = None):
+    """Validate an API key and return basic auth info. Rate-limited per IP."""
+    ip = request.client.host if request and request.client else "unknown"
+    rate_limiter.check(ip)
+    rate_limiter.record(ip)
+    key = body.get("api_key", "")
+    if not key or key not in access_control.api_keys:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    return {"status": "authenticated"}
+
+@app.post("/auth/token")
+def auth_token(body: dict = Body(...), request: Request = None):
+    """Validate credentials and issue a JWT. Rate-limited per IP."""
+    from fastapi import status as _status
+    ip = request.client.host if request and request.client else "unknown"
+    rate_limiter.check(ip)
+    rate_limiter.record(ip)
+    key = body.get("api_key", "")
+    if not key or key not in access_control.api_keys:
+        raise HTTPException(status_code=_status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    import jwt as _jwt
+    import time as _t
+    token = _jwt.encode(
+        {"sub": "api_user", "roles": ["user"], "exp": int(_t.time()) + 3600},
+        access_control.jwt_secret,
+        algorithm="HS256",
+    )
+    return {"access_token": token, "token_type": "bearer"}
 
 # --- Main ---
 if __name__ == "__main__":

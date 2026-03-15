@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useTemplates } from '../hooks/useTemplates';
 import { TemplateInfo } from '../types';
+import { getTemplateVersions } from '../services/api';
 
 const CATEGORY_META: Record<string, { label: string; icon: string; color: string; bg: string }> = {
   'General':    { label: 'General',    icon: 'fa-layer-group',  color: 'text-indigo-600', bg: 'bg-indigo-50'   },
@@ -29,6 +30,7 @@ function getCategory(t: TemplateInfo): string {
 }
 
 type SortOption = 'name' | 'category';
+const TEMPLATES_PER_PAGE = 12;
 
 const TemplateCard: React.FC<{
   template: TemplateInfo;
@@ -36,9 +38,23 @@ const TemplateCard: React.FC<{
   onCustomize: () => void;
 }> = ({ template, onUse, onCustomize }) => {
   const [expanded, setExpanded] = useState(false);
+  // FE-UX-7: Template version list
+  const [versions, setVersions] = useState<any[] | null>(null);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [showVersions, setShowVersions] = useState(false);
   const cat = getCategory(template);
   const meta = CATEGORY_META[cat] || CATEGORY_META['General'];
   const agentCount = (template.example as any)?.agents?.length ?? 0;
+
+  const handleVersions = async () => {
+    if (showVersions) { setShowVersions(false); return; }
+    setVersionsLoading(true);
+    try {
+      const v = await getTemplateVersions(template.name);
+      setVersions(v);
+    } catch { setVersions([]); }
+    finally { setVersionsLoading(false); setShowVersions(true); }
+  };
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex flex-col">
@@ -91,7 +107,7 @@ const TemplateCard: React.FC<{
         </details>
       )}
 
-      <div className="mt-auto p-5 pt-4 flex gap-3">
+      <div className="mt-auto p-5 pt-4 flex gap-3 flex-wrap">
         <button onClick={onUse}
           className="flex-1 py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 active:scale-95">
           <i className="fas fa-play"></i> Use Template
@@ -100,7 +116,31 @@ const TemplateCard: React.FC<{
           className="flex-1 py-2 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 active:scale-95">
           <i className="fas fa-sliders-h"></i> Customize
         </button>
+        {/* FE-UX-7: View versions button */}
+        <button onClick={handleVersions} disabled={versionsLoading}
+          className="py-2 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-500 text-xs font-semibold transition-colors flex items-center gap-1.5 active:scale-95 disabled:opacity-50">
+          <i className={`fas ${versionsLoading ? 'fa-spinner fa-spin' : 'fa-history'}`}></i>
+          {showVersions ? 'Hide' : 'Versions'}
+        </button>
       </div>
+      {/* FE-UX-7: Versions panel */}
+      {showVersions && versions !== null && (
+        <div className="mx-5 mb-5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Version History</p>
+          {versions.length === 0 ? (
+            <p className="text-xs text-slate-400 italic">No saved versions found</p>
+          ) : (
+            <div className="space-y-1">
+              {versions.map((v: any, i: number) => (
+                <div key={i} className="flex items-center justify-between text-xs text-slate-600 py-1 border-b border-slate-100 last:border-0">
+                  <span className="font-mono font-bold">v{v.version || v}</span>
+                  {v.description && <span className="text-slate-400 truncate ml-2">{v.description}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -109,6 +149,7 @@ const TemplatesView: React.FC<{ onNavigate?: (view: string, data?: any) => void 
   const [search, setSearch] = useState('');
   const [selectedCat, setSelectedCat] = useState('All');
   const [sort, setSort] = useState<SortOption>('category');
+  const [page, setPage] = useState(1);
   const { data: templates, loading, error } = useTemplates();
 
   const catCounts = useMemo(() => {
@@ -138,6 +179,13 @@ const TemplatesView: React.FC<{ onNavigate?: (view: string, data?: any) => void 
         : getCategory(a).localeCompare(getCategory(b)) || a.name.localeCompare(b.name));
   }, [templates, search, selectedCat, sort]);
 
+  // FE-UX-6: Pagination
+  const totalPages = Math.max(1, Math.ceil(filtered.length / TEMPLATES_PER_PAGE));
+  const currentPage = Math.min(page, totalPages);
+  const paginated = filtered.slice((currentPage - 1) * TEMPLATES_PER_PAGE, currentPage * TEMPLATES_PER_PAGE);
+
+  const resetPage = () => setPage(1);
+
   return (
     <div className="flex gap-6 animate-in fade-in duration-300">
       {/* Sidebar */}
@@ -148,7 +196,7 @@ const TemplatesView: React.FC<{ onNavigate?: (view: string, data?: any) => void 
           const count = catCounts[cat] || 0;
           const active = selectedCat === cat;
           return (
-            <button key={cat} onClick={() => setSelectedCat(cat)}
+            <button key={cat} onClick={() => { setSelectedCat(cat); resetPage(); }}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
                 active ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200' : 'text-slate-600 hover:bg-slate-100'}`}>
               <i className={`fas ${meta ? meta.icon : 'fa-th-large'} w-4 text-center ${active ? 'text-white' : (meta ? meta.color : 'text-slate-400')}`}></i>
@@ -189,9 +237,10 @@ const TemplatesView: React.FC<{ onNavigate?: (view: string, data?: any) => void 
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-500">
               {filtered.length === templates.length ? `${templates.length} templates` : `${filtered.length} of ${templates.length} templates`}
+              {totalPages > 1 && ` · Page ${currentPage} of ${totalPages}`}
             </span>
             {(search || selectedCat !== 'All') && (
-              <button onClick={() => { setSearch(''); setSelectedCat('All'); }} className="text-xs text-indigo-600 hover:underline font-medium">
+              <button onClick={() => { setSearch(''); setSelectedCat('All'); resetPage(); }} className="text-xs text-indigo-600 hover:underline font-medium">
                 Clear filters
               </button>
             )}
@@ -234,13 +283,34 @@ const TemplatesView: React.FC<{ onNavigate?: (view: string, data?: any) => void 
 
         {/* Grid */}
         {!loading && !error && filtered.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-            {filtered.map(template => (
-              <TemplateCard key={template.name} template={template}
-                onUse={() => onNavigate?.('/builder', { template })}
-                onCustomize={() => onNavigate?.('/translation', { template })} />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+              {paginated.map(template => (
+                <TemplateCard key={template.name} template={template}
+                  onUse={() => onNavigate?.('/builder', { template })}
+                  onCustomize={() => onNavigate?.('/translation', { template })} />
+              ))}
+            </div>
+            {/* FE-UX-6: Pagination controls */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-center gap-2 pt-2">
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}
+                  className="px-3 py-1.5 rounded-lg border border-slate-200 text-sm font-medium disabled:opacity-40 hover:bg-slate-100 transition-colors">
+                  <i className="fas fa-chevron-left"></i>
+                </button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+                  <button key={p} onClick={() => setPage(p)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${p === currentPage ? 'bg-indigo-600 text-white' : 'border border-slate-200 hover:bg-slate-100'}`}>
+                    {p}
+                  </button>
+                ))}
+                <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}
+                  className="px-3 py-1.5 rounded-lg border border-slate-200 text-sm font-medium disabled:opacity-40 hover:bg-slate-100 transition-colors">
+                  <i className="fas fa-chevron-right"></i>
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

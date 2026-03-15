@@ -6,8 +6,26 @@ Supports pluggable backends (logging, OpenTelemetry, Prometheus, etc.)
 
 import json
 import logging
+import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Callable, Dict, List, Optional
+
+# OBS-2: Optional OpenTelemetry import
+try:
+    from opentelemetry import trace as _otel_trace
+    from opentelemetry.trace import NonRecordingSpan as _NonRecordingSpan
+    _OTEL_AVAILABLE = True
+except ImportError:
+    _OTEL_AVAILABLE = False
+
+# OBS-3: Optional Prometheus import
+try:
+    from prometheus_client import Counter as _Counter, Histogram as _Histogram
+    _PROMETHEUS_AVAILABLE = True
+except ImportError:
+    _PROMETHEUS_AVAILABLE = False
 
 
 class _JsonFormatter(logging.Formatter):
@@ -56,9 +74,47 @@ class ObservabilityManager:
             self.logger.addHandler(_make_json_handler())
             self.logger.propagate = False
         self.hooks: Dict[str, List[Callable]] = {}
-        # Placeholders for future integrations
-        self.otel = None  # OpenTelemetry
-        self.prometheus = None  # Prometheus
+
+        # OBS-2: OpenTelemetry tracer initialization
+        self._otel_tracer = None
+        if _OTEL_AVAILABLE and "otel" in self.backends:
+            self._otel_tracer = _otel_trace.get_tracer("phoenice.observability")
+        self.otel = self._otel_tracer
+
+        # OBS-3: Prometheus metrics initialization
+        self._prometheus_enabled = False
+        self._prom_node_executions = None
+        self._prom_node_latency = None
+        self._prom_errors_total = None
+        self._prom_retries_total = None
+        if _PROMETHEUS_AVAILABLE and "prometheus" in self.backends:
+            self._prometheus_enabled = True
+            self._prom_node_executions = _Counter(
+                "phoenice_node_executions_total",
+                "Total agent node executions",
+                ["node", "session_id"],
+            )
+            self._prom_node_latency = _Histogram(
+                "phoenice_node_latency_seconds",
+                "Agent node latency in seconds",
+                ["node"],
+            )
+            self._prom_errors_total = _Counter(
+                "phoenice_errors_total",
+                "Total agent node errors",
+                ["node", "error_type"],
+            )
+            self._prom_retries_total = _Counter(
+                "phoenice_retries_total",
+                "Total agent node retries",
+                ["node"],
+            )
+        self.prometheus = self._prom_node_executions  # legacy placeholder
+
+        # OBS-5: SQLite event persistence
+        self._event_db_path: Optional[str] = None
+        self._event_db_conn: Optional[sqlite3.Connection] = None
+        self._event_db_lock = threading.Lock()
 
     # --- Structured Logging ---
     def log_event(self, event_type: str, data: Dict[str, Any]):
@@ -71,6 +127,9 @@ class ObservabilityManager:
                 "duration_ms": data.get("duration_ms", ""),
             }
             self.logger.info(json.dumps(data, default=str), extra=extra)
+        # OBS-5: persist event to SQLite if enabled
+        if self._event_db_conn is not None:
+            self._persist_event(event_type, data)
         self._run_hooks(event_type, data)
 
     # --- Error Logging ---
@@ -178,3 +237,87 @@ class ObservabilityManager:
     def _run_hooks(self, event_type: str, data: Dict[str, Any]):
         for cb in self.hooks.get(event_type, []):
             self._run_hook_with_timeout(event_type, cb, data)
+
+    # OBS-2: OTEL span context manager
+    @contextmanager
+    def start_span(self, name: str, attributes: Optional[Dict[str, Any]] = None):
+        """Return a context manager that creates an OTEL span if configured, else a no-op."""
+        if self._otel_tracer is not None:
+            with self._otel_tracer.start_as_current_span(name) as span:
+                if attributes:
+                    for k, v in attributes.items():
+                        try:
+                            span.set_attribute(k, str(v))
+                        except Exception:
+                            pass
+                yield span
+        else:
+            yield None
+
+    # OBS-3: Prometheus node metric recorder
+    def record_node_metric(self, node: str, duration_s: float, success: bool,
+                           retries: int = 0, session_id: str = "", error_type: str = ""):
+        """Increment Prometheus counters and histograms for a node execution."""
+        if not self._prometheus_enabled:
+            return
+        try:
+            self._prom_node_executions.labels(node=node, session_id=session_id).inc()
+            self._prom_node_latency.labels(node=node).observe(duration_s)
+            if not success:
+                self._prom_errors_total.labels(node=node, error_type=error_type or "error").inc()
+            if retries > 0:
+                self._prom_retries_total.labels(node=node).inc(retries)
+        except Exception:
+            pass
+
+    # OBS-5: SQLite event persistence methods
+    def _enable_event_persistence(self, db_path: str):
+        """Create SQLite DB and events table for persistent event logging."""
+        self._event_db_path = db_path
+        self._event_db_conn = sqlite3.connect(db_path, check_same_thread=False)
+        with self._event_db_lock:
+            self._event_db_conn.execute(
+                "CREATE TABLE IF NOT EXISTS events("
+                "id INTEGER PRIMARY KEY, session_id TEXT, event_type TEXT, "
+                "data TEXT, ts REAL)"
+            )
+            self._event_db_conn.commit()
+
+    def _persist_event(self, event_type: str, data: Dict[str, Any]):
+        """Insert an event into the SQLite events table (thread-safe)."""
+        try:
+            session_id = data.get("session_id", "")
+            data_str = json.dumps(data, default=str)
+            with self._event_db_lock:
+                self._event_db_conn.execute(
+                    "INSERT INTO events(session_id, event_type, data, ts) VALUES (?,?,?,?)",
+                    (session_id, event_type, data_str, time.time()),
+                )
+                self._event_db_conn.commit()
+        except Exception:
+            pass
+
+    def query_events(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return all events for a given session_id from the SQLite store."""
+        if self._event_db_conn is None:
+            return []
+        try:
+            with self._event_db_lock:
+                cur = self._event_db_conn.execute(
+                    "SELECT id, session_id, event_type, data, ts FROM events WHERE session_id=?",
+                    (session_id,),
+                )
+                rows = cur.fetchall()
+            result = []
+            for row in rows:
+                try:
+                    data = json.loads(row[3])
+                except Exception:
+                    data = row[3]
+                result.append({
+                    "id": row[0], "session_id": row[1], "event_type": row[2],
+                    "data": data, "ts": row[4],
+                })
+            return result
+        except Exception:
+            return []

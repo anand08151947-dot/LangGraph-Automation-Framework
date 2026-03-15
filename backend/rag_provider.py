@@ -11,7 +11,7 @@ Providers:
 
 import logging
 import os
-from typing import List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class RagProvider:
         collection: str = "",
         top_k: int = 5,
         score_threshold: float = 0.0,
+        metadata_filter: Optional[Dict] = None,
     ) -> List[str]:
         raise NotImplementedError
 
@@ -63,6 +64,7 @@ class LocalFileRagProvider(RagProvider):
         collection: str = "",
         top_k: int = 5,
         score_threshold: float = 0.0,
+        metadata_filter: Optional[Dict] = None,
     ) -> List[str]:
         if not os.path.isdir(self.directory):
             return []
@@ -82,6 +84,7 @@ class LocalFileRagProvider(RagProvider):
 
         # Collect all paragraphs across files
         paragraphs: List[str] = []
+        doc_metadata: List[Optional[Dict]] = []
         for fname in sorted(os.listdir(self.directory)):
             if not (fname.endswith(".txt") or fname.endswith(".md")):
                 continue
@@ -91,10 +94,37 @@ class LocalFileRagProvider(RagProvider):
                     content = fh.read()
             except OSError:
                 continue
+            # RAG-3: Try to parse file as JSON with _metadata key
+            file_meta = None
+            try:
+                import json as _json
+                parsed = _json.loads(content)
+                if isinstance(parsed, dict):
+                    file_meta = parsed.get("_metadata")
+                    content = parsed.get("content", content)
+            except Exception:
+                pass
             for para in content.split("\n\n"):
                 para = para.strip()
                 if para:
                     paragraphs.append(para)
+                    doc_metadata.append(file_meta)
+
+        if not paragraphs:
+            return []
+
+        # RAG-3: Apply metadata filter before scoring
+        if metadata_filter:
+            filtered_paragraphs = []
+            filtered_meta = []
+            for para, meta in zip(paragraphs, doc_metadata):
+                if meta is not None and all(
+                    meta.get(k) == v for k, v in metadata_filter.items()
+                ):
+                    filtered_paragraphs.append(para)
+                    filtered_meta.append(meta)
+            paragraphs = filtered_paragraphs
+            doc_metadata = filtered_meta
 
         if not paragraphs:
             return []

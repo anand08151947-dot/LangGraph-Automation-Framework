@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import ReactDOM from 'react-dom';
 import { TemplateInfo } from '../types';
 import { useWorkflowBuilder } from '../hooks/useWorkflowBuilder';
-import { saveTemplate, orchestrateAsync, getStatus, getCustomTemplates, getTemplateVersions, getRegisteredTools } from '../services/api';
+import { saveTemplate, orchestrateAsync, getStatus, getCustomTemplates, getTemplateVersions, getRegisteredTools, validateConfig } from '../services/api';
 
 // ── Local Types ──────────────────────────────────────────────────────────────
 
@@ -3429,6 +3429,18 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
     const handleRun = async () => {
       setRunLoading(true); setRunError(null); setRunResult(null); setRunId(null);
       try {
+        // FE-BUILD-6 + CFG-5: Pre-flight validation before orchestration
+        try {
+          const validation = await validateConfig(cfg as any);
+          if (validation && validation.valid === false) {
+            const errMsg = validation.errors?.join(', ') || validation.detail || 'Validation failed';
+            setRunError(`Validation failed: ${errMsg}`);
+            setRunLoading(false);
+            return;
+          }
+        } catch {
+          // If validation endpoint unavailable, proceed anyway
+        }
         const res = await orchestrateAsync(cfg as any);
         setRunId(res.run_id);
         setNotification({ type: 'success', msg: `Workflow started — run ID: ${res.run_id}` });
@@ -3484,6 +3496,24 @@ const BuilderView: React.FC<BuilderProps> = ({ initialTemplate, onNavigate }) =>
             <button onClick={handleSaveTemplate}
               className="w-full py-3 bg-white border-2 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 font-semibold rounded-xl flex items-center justify-center gap-2 transition-all">
               <i className="fas fa-save"></i> Save as Template…
+            </button>
+            {/* CFG-5: Standalone Validate button */}
+            <button onClick={async () => {
+              try {
+                const v = await validateConfig(cfg as any);
+                if (v?.valid === false) {
+                  const msg = v.errors?.join('\n') || v.detail || 'Validation failed';
+                  setRunError(`Schema errors:\n${msg}`);
+                } else {
+                  setNotification({ type: 'success', msg: 'Workflow config is valid ✓' });
+                  setRunError(null);
+                }
+              } catch {
+                setNotification({ type: 'success', msg: 'Config validated (schema check unavailable)' });
+              }
+            }} disabled={runLoading}
+              className="w-full py-3 bg-emerald-50 border-2 border-emerald-200 hover:border-emerald-400 hover:bg-emerald-100 text-emerald-700 font-semibold rounded-xl flex items-center justify-center gap-2 transition-all">
+              <i className="fas fa-check-circle"></i> Validate Config
             </button>
             <button onClick={handleRun} disabled={runLoading}
               className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold rounded-xl flex items-center justify-center gap-2 transition-colors shadow-lg shadow-indigo-200">

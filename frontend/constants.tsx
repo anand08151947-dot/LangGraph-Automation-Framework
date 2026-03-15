@@ -8,6 +8,7 @@ export const NAV_ITEMS = [
   { label: 'Workflow Builder', icon: <i className="fas fa-project-diagram"></i>, path: '/builder' },
   { label: 'Translation', icon: <i className="fas fa-language"></i>, path: '/translation' },
   { label: 'Orchestration', icon: <i className="fas fa-microchip"></i>, path: '/monitor' },
+  { label: 'Tool Registry', icon: <i className="fas fa-plug"></i>, path: '/tools' },
   { label: 'Artifact Export', icon: <i className="fas fa-download"></i>, path: '/export' },
   { label: 'Settings', icon: <i className="fas fa-cog"></i>, path: '/settings' },
   { label: 'Help & Docs', icon: <i className="fas fa-question-circle"></i>, path: '/docs' },

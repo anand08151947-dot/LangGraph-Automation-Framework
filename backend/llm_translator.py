@@ -31,7 +31,7 @@ class LLMTranslator:
 
     def __init__(self, schema_path: str = SCHEMA_PATH, openai_api_key: Optional[str] = None, mode: str = "openai",
                  lm_studio_url: Optional[str] = None, lm_studio_model: Optional[str] = None,
-                 openai_model: Optional[str] = None):
+                 openai_model: Optional[str] = None, context_limit: int = 4096):
         self.schema = self._load_schema(schema_path)
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
         openai.api_key = self.openai_api_key
@@ -47,12 +47,31 @@ class LLMTranslator:
         self.lm_studio_url = f"{base}/v1/completions"
         self.lm_studio_chat_url = f"{base}/v1/chat/completions"
         self.lm_studio_model = lm_studio_model or os.getenv("LM_STUDIO_MODEL", LM_STUDIO_MODEL)
+        # LLM-2: token limit tracking
+        self._context_limit = context_limit
 
     def _load_schema(self, path: str) -> Dict[str, Any]:
         if not os.path.exists(path):
             return {}
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """LLM-2: Rough token estimate (1 token ≈ 4 chars)."""
+        return max(1, len(text) // 4)
+
+    def _warn_if_over_limit(self, prompt: str):
+        """LLM-2: Log a warning if estimated tokens exceed 80% of context limit."""
+        estimated = self._estimate_tokens(prompt)
+        threshold = int(self._context_limit * 0.8)
+        if estimated > threshold:
+            import logging as _logging
+            _logging.warning(
+                "LLMTranslator: prompt estimated at ~%d tokens, exceeds 80%% of context limit (%d). "
+                "Consider shortening input.",
+                estimated, self._context_limit,
+            )
 
     def _call_lm_studio(self, prompt: str, temperature: float = 0.2) -> str:
         """Send a prompt to LM Studio. Tries chat/completions endpoint first (preferred for modern models),
@@ -201,6 +220,7 @@ class LLMTranslator:
 
     def english_to_json(self, instructions: str, retries: int = 2) -> Dict[str, Any]:
         prompt = self._build_prompt(instructions, customization=False)
+        self._warn_if_over_limit(prompt)
         if self.mode == "manual":
             # Print prompt to STDOUT and read pasted model output
             print("\n===== COPY the PROMPT below into your LLM/interpreter =====\n")
@@ -246,6 +266,7 @@ class LLMTranslator:
 
     def customize_json(self, base_json: Dict[str, Any], custom_instructions: str, retries: int = 2) -> Dict[str, Any]:
         prompt = self._build_prompt(custom_instructions, base_json=base_json, customization=True)
+        self._warn_if_over_limit(prompt)
         if self.mode == "manual":
             print("\n===== COPY the PROMPT below into your LLM/interpreter =====\n")
             print(prompt)

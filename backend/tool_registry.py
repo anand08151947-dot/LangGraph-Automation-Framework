@@ -4,14 +4,30 @@ Dynamic tool registry and discovery for agentic workflows.
 Supports registration, metadata, health, and REST API exposure.
 """
 
+import json
+import sqlite3
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 class ToolRegistry:
-    def __init__(self):
+    def __init__(self, db_path: str = None):
         self._tools: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._version_history: Dict[str, List[Dict[str, Any]]] = {}  # name -> list of versions
+
+        # MCP-6: SQLite persistence
+        self._db_path = db_path
+        self._db_conn: Optional[sqlite3.Connection] = None
+        if db_path:
+            self._db_conn = sqlite3.connect(db_path, check_same_thread=False)
+            self._db_conn.execute(
+                "CREATE TABLE IF NOT EXISTS tools("
+                "name TEXT PRIMARY KEY, metadata TEXT, version TEXT, "
+                "status TEXT, registered_at REAL)"
+            )
+            self._db_conn.commit()
+            self._load_from_db()
 
     def register_tool(self, name: str, metadata: Dict[str, Any]):
         with self._lock:
@@ -26,11 +42,23 @@ class ToolRegistry:
             if name not in self._version_history:
                 self._version_history[name] = []
             self._version_history[name].append(tool_data.copy())
+            # MCP-6: persist to DB
+            if self._db_conn is not None:
+                self._db_conn.execute(
+                    "INSERT OR REPLACE INTO tools(name, metadata, version, status, registered_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (name, json.dumps(metadata), version, "healthy", time.time()),
+                )
+                self._db_conn.commit()
 
     def unregister_tool(self, name: str):
         with self._lock:
             if name in self._tools:
                 del self._tools[name]
+            # MCP-6: remove from DB
+            if self._db_conn is not None:
+                self._db_conn.execute("DELETE FROM tools WHERE name=?", (name,))
+                self._db_conn.commit()
 
     def update_tool_status(self, name: str, status: str):
         with self._lock:
@@ -38,6 +66,31 @@ class ToolRegistry:
                 self._tools[name]["status"] = status
                 # Track status change in version history
                 self._version_history[name].append(self._tools[name].copy())
+            # MCP-6: update DB
+            if self._db_conn is not None:
+                self._db_conn.execute(
+                    "UPDATE tools SET status=? WHERE name=?", (status, name)
+                )
+                self._db_conn.commit()
+
+    def _load_from_db(self):
+        """MCP-6: Hydrate _tools from SQLite DB at startup."""
+        if self._db_conn is None:
+            return
+        cur = self._db_conn.execute(
+            "SELECT name, metadata, version, status FROM tools"
+        )
+        for row in cur.fetchall():
+            name, metadata_str, version, status = row
+            try:
+                metadata = json.loads(metadata_str)
+            except Exception:
+                metadata = {}
+            tool_data = {**metadata, "version": version, "status": status}
+            self._tools[name] = tool_data
+            if name not in self._version_history:
+                self._version_history[name] = []
+            self._version_history[name].append(tool_data.copy())
     def get_version_history(self, name: str) -> List[Dict[str, Any]]:
         with self._lock:
             return self._version_history.get(name, [])
