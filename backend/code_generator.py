@@ -93,6 +93,7 @@ class CodeGenerator:
         retry_policy = config.get("retry_policy", {})
         checkpointing = config.get("checkpointing", {})
         obs_hooks = config.get("observability_hooks", {})
+        parallel_groups = config.get("parallel_execution", [])
 
         lines: list = []
 
@@ -103,9 +104,9 @@ class CodeGenerator:
             f"# Author:  {author}",
             f"# Generated: {timestamp}",
             "#",
-            "# This is a scaffold — fill in LLM/tool call implementations.",
+            "# Fully runnable standalone script. Run: python agent.py --help",
             "# All per-node settings (guardrails, pre_llm, context, validation)",
-            "# are represented as structured comments and stub calls.",
+            "# are baked in from the workflow config.",
             "",
         ]
 
@@ -116,6 +117,29 @@ class CodeGenerator:
             "import os, json, math, time, sqlite3, threading, requests",
             "from dotenv import load_dotenv",
             "",
+        ]
+        # Conditional: Send() for parallel fan-out
+        if parallel_groups:
+            lines += [
+                "try:",
+                "    from langgraph.types import Send",
+                "except ImportError:",
+                "    try:",
+                "        from langgraph.constants import Send  # type: ignore",
+                "    except ImportError:",
+                "        Send = None  # type: ignore  # parallel fan-out unavailable",
+                "",
+            ]
+        # Conditional: SqliteSaver for checkpointing
+        if checkpointing.get("enabled"):
+            lines += [
+                "try:",
+                "    from langgraph.checkpoint.sqlite import SqliteSaver",
+                "except ImportError:",
+                "    SqliteSaver = None  # type: ignore  # pip install langgraph-checkpoint-sqlite",
+                "",
+            ]
+        lines += [
             "load_dotenv()",
             "",
         ]
@@ -155,7 +179,7 @@ class CodeGenerator:
                 lines.append("")
 
         # ── Graph assembly ────────────────────────────────────────────────
-        lines += self._build_graph(nodes, edges, checkpointing)
+        lines += self._build_graph(nodes, edges, checkpointing, parallel_groups)
         lines.append("")
 
         # ── Memory helpers (STM eviction + LTM TTL) ───────────────────────
@@ -186,6 +210,11 @@ class CodeGenerator:
         runtime = config.get("runtime", {})
         nodes = config.get("nodes", [])
         mcp_servers = config.get("mcp_servers", {})
+        checkpointing = config.get("checkpointing", {})
+
+        # Add langgraph-checkpoint-sqlite when checkpointing is enabled
+        if checkpointing.get("enabled"):
+            reqs.append("langgraph-checkpoint-sqlite>=3.0.0")
 
         if stm.get("type") == "redis" or ltm.get("provider") == "redis":
             reqs.append("redis>=5.0.0")
@@ -971,19 +1000,29 @@ class CodeGenerator:
         lines.append(f'    return "END"')
         return lines
 
-    def _build_graph(self, nodes: list, edges: list, checkpointing: dict) -> list:
+    def _build_graph(self, nodes: list, edges: list, checkpointing: dict, parallel_groups: list = None) -> list:  # noqa: C901
+        """Generate graph assembly code with parallel Send() fan-out and SqliteSaver checkpointing."""
         checkpoint_nodes = checkpointing.get("nodes", [])
+        checkpointing_enabled = checkpointing.get("enabled", False)
+        cp_db_path = checkpointing.get("db_path", "artifacts/langgraph_checkpoints.sqlite")
+        parallel_groups = parallel_groups or []
+
+        # Build a map: node_id → group info (for nodes participating in parallel groups)
+        parallel_node_ids: set = set()
+        for group in parallel_groups:
+            for nid in group.get("nodes", []):
+                parallel_node_ids.add(nid)
 
         lines = [
             "# ── Graph Assembly ───────────────────────────────────────────────────────",
             "workflow = StateGraph(WorkflowState)",
         ]
 
-        func_names = {}
+        node_id_set = {n.get("id", "") for n in nodes}
+
         for node in nodes:
             node_id: str = node.get("id", "unknown")
             func_name = f"node_{node_id.lower()}"
-            func_names[node_id] = func_name
             cp_comment = "  # checkpoint" if node_id in checkpoint_nodes else ""
             lines.append(f'workflow.add_node("{node_id}", {func_name}){cp_comment}')
 
@@ -991,18 +1030,58 @@ class CodeGenerator:
             first_id = nodes[0].get("id", "")
             lines.append(f'workflow.set_entry_point("{first_id}")')
 
-        # Edges from explicit edges list
+        # ── Parallel fan-out groups via Send() ────────────────────────────
         added_edges: set = set()
+        if parallel_groups:
+            lines += [
+                "",
+                "# ── Parallel fan-out dispatcher(s) (Send() API) ─────────────────────",
+            ]
+            for group in parallel_groups:
+                group_name = group.get("group", "fanout")
+                group_nodes = [n for n in group.get("nodes", []) if n in node_id_set]
+                fan_in = group.get("fan_in")
+                dispatcher_id = f"__dispatch_{group_name}__"
+
+                if len(group_nodes) < 2:
+                    lines.append(f"# Parallel group '{group_name}': <2 valid nodes, skipped")
+                    continue
+
+                # Dispatcher node: passthrough (just forwards state to both branches)
+                lines += [
+                    f"def _dispatch_{group_name}(state: WorkflowState):",
+                    f'    """Fan-out to parallel group: {group_nodes}"""',
+                    f"    if Send is not None:",
+                    f"        return [Send(t, state) for t in {group_nodes!r}]",
+                    f"    # Send() unavailable: sequential fallback",
+                    f'    return "{group_nodes[0]}"',
+                    f"workflow.add_node({dispatcher_id!r}, lambda s: s)",
+                    f"workflow.add_conditional_edges(",
+                    f"    {dispatcher_id!r},",
+                    f"    _dispatch_{group_name},",
+                    f"    {{{', '.join(repr(n) + ': ' + repr(n) for n in group_nodes)}}},",
+                    f")",
+                ]
+                added_edges.add(dispatcher_id)
+
+                # Wire fan-in: all group nodes → fan_in node
+                if fan_in and fan_in in node_id_set:
+                    for nid in group_nodes:
+                        lines.append(f'workflow.add_edge("{nid}", "{fan_in}")')
+                        added_edges.add(nid)
+            lines.append("")
+
+        # ── Edges from explicit edges list ────────────────────────────────
         for edge in edges:
             src = edge.get("from") or edge.get("source", "")
             dst = edge.get("to") or edge.get("target", "")
             condition = edge.get("condition")
-            if src and dst and not condition:
+            if src and dst and not condition and src not in added_edges:
                 dst_target = "END" if dst.upper() == "END" else f'"{dst}"'
                 lines.append(f'workflow.add_edge("{src}", {dst_target})')
                 added_edges.add(src)
 
-        # Simple next edges from node config (for nodes without routing_logic)
+        # ── Simple next edges from node config ────────────────────────────
         for node in nodes:
             node_id = node.get("id", "")
             nxt = node.get("next", "")
@@ -1011,7 +1090,7 @@ class CodeGenerator:
                 dst_target = "END" if nxt.upper() == "END" else f'"{nxt}"'
                 lines.append(f'workflow.add_edge("{node_id}", {dst_target})')
 
-        # Conditional edges for nodes with routing_logic (list format)
+        # ── Conditional edges for nodes with routing_logic ────────────────
         for node in nodes:
             node_id = node.get("id", "")
             routing_logic = node.get("routing_logic")
@@ -1021,14 +1100,31 @@ class CodeGenerator:
             targets = {r.get("next") for r in routing_logic if r.get("next")}
             targets.add("END")
             mapping = {t: ("END" if t == "END" else t) for t in targets}
-            # Replace END string with actual END constant in output
             mapping_str = "{" + ", ".join(
                 f'"{k}": {"END" if v == "END" else repr(v)}'
                 for k, v in mapping.items()
             ) + "}"
             lines.append(f'workflow.add_conditional_edges("{node_id}", {route_func}, {mapping_str})')
 
-        lines.append("graph = workflow.compile()")
+        # ── Compile with optional SqliteSaver checkpointer ────────────────
+        lines.append("")
+        if checkpointing_enabled:
+            lines += [
+                "# ── LangGraph Checkpointing (SqliteSaver) ───────────────────────────",
+                f"_CHECKPOINT_DB = os.getenv('CHECKPOINT_DB', {cp_db_path!r})",
+                "os.makedirs(os.path.dirname(_CHECKPOINT_DB) or '.', exist_ok=True)",
+                "_checkpointer = None",
+                "if SqliteSaver is not None:",
+                "    try:",
+                "        _checkpointer = SqliteSaver.from_conn_string(_CHECKPOINT_DB)",
+                "        print(f'[CHECKPOINT] SqliteSaver enabled at {_CHECKPOINT_DB!r}')",
+                "    except Exception as _ce:",
+                "        print(f'[CHECKPOINT] SqliteSaver init failed: {_ce} — running without checkpointer')",
+                "graph = workflow.compile(checkpointer=_checkpointer) if _checkpointer else workflow.compile()",
+            ]
+        else:
+            lines.append("graph = workflow.compile()")
+
         return lines
 
     def _build_memory_helpers(self, memory_cfg: dict) -> list:
@@ -1130,6 +1226,8 @@ class CodeGenerator:
         backoff_strategy = retry_policy.get("backoff_strategy", "fixed")
         backoff_base = float(retry_policy.get("backoff_base_seconds", 1.0))
 
+        checkpointing_enabled = bool((config.get("checkpointing") or {}).get("enabled"))
+
         lines = [
             "# ── Workflow Runner ──────────────────────────────────────────────────────",
             f"# LLM retry: max={max_retries}, backoff={backoff_strategy}, base={backoff_base}s (baked into call_llm)",
@@ -1159,11 +1257,25 @@ class CodeGenerator:
             f"    MAX_ITER = {max_iter}",
             "    step_idx = 0",
             "",
-            "    for step_output in graph.stream(state):",
-            "        for node_name, node_updates in step_output.items():",
-            "            if isinstance(node_updates, dict):",
-            "                state.update(node_updates)",
         ]
+
+        # Build the graph.stream() call — pass thread_id if checkpointing is enabled
+        if checkpointing_enabled:
+            lines += [
+                "    # GRAPH-3: pass thread_id so SqliteSaver checkpointer scopes state to this session",
+                "    _stream_cfg = {'configurable': {'thread_id': session_id}} if _checkpointer else None",
+                "    for step_output in graph.stream(state, config=_stream_cfg):",
+                "        for node_name, node_updates in step_output.items():",
+                "            if isinstance(node_updates, dict):",
+                "                state.update(node_updates)",
+            ]
+        else:
+            lines += [
+                "    for step_output in graph.stream(state):",
+                "        for node_name, node_updates in step_output.items():",
+                "            if isinstance(node_updates, dict):",
+                "                state.update(node_updates)",
+            ]
 
         # Observability — log_state_transitions: print step summary
         if log_transitions:
@@ -1232,7 +1344,7 @@ class CodeGenerator:
             "        ),",
             "    )",
             "    parser.add_argument('--input', '-i', default=None,",
-            "        help='Initial state as a JSON string (e.g. \\'{\"document_text\": \"...\"}\\'')",
+            "        help='Initial state as a JSON string (e.g. {\"key\": \"value\"})'",
             "    )",
             "    parser.add_argument('--input-file', '-f', default=None,",
             "        help='Path to a JSON file containing the initial state'",
