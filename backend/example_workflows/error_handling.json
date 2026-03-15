@@ -1,0 +1,54 @@
+{
+  "workflow_name": "Error Handling and Retry Paths",
+  "description": "Demonstrates error detection, retry logic, and fallback routing when an agent fails.",
+  "agents": [
+    {
+      "id": "primary_agent",
+      "name": "Primary Data Fetcher",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "Fetch and summarize the requested data: {{query}}. If unable to retrieve, output exactly: ERROR: unable to fetch.",
+      "output_schema": {"format": "text"},
+      "next": "error_checker",
+      "retry": {
+        "max_retries": 2,
+        "backoff_seconds": 1.0,
+        "jitter": true
+      }
+    },
+    {
+      "id": "error_checker",
+      "name": "Error Detector",
+      "type": "router",
+      "routing": {
+        "type": "conditional",
+        "rules": [
+          {"condition": "state.get('primary_agent', '').startswith('ERROR')", "next": "fallback_agent"},
+          {"condition": "true", "next": "summarizer"}
+        ]
+      }
+    },
+    {
+      "id": "fallback_agent",
+      "name": "Fallback Agent",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "The primary data source failed. Use alternative approach to answer: {{query}}. Acknowledge you are using a fallback source.",
+      "output_schema": {"format": "text"},
+      "next": "summarizer"
+    },
+    {
+      "id": "summarizer",
+      "name": "Summary Writer",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "Summarize the following response in 2-3 sentences: {{primary_agent}}{{fallback_agent}}",
+      "output_schema": {"format": "text"},
+      "next": "END"
+    }
+  ],
+  "entry_point": "primary_agent",
+  "initial_state": {
+    "query": "What are the latest sales figures for Q4?"
+  }
+}

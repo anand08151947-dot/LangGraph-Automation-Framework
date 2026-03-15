@@ -10,6 +10,7 @@ import ExportView from './views/ExportView';
 import SettingsView from './views/SettingsView';
 import HelpView from './views/HelpView';
 import ToolsView from './views/ToolsView';
+import AuditLogView from './views/AuditLogView';
 import { TemplateInfo } from './types';
 import { ToastProvider } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -49,6 +50,7 @@ const App: React.FC = () => {
       case '/translation': return <TranslationView key={translationTemplate?.name ?? '__blank__'} initialTemplate={translationTemplate} onNavigate={navigate} />;
       case '/monitor': return <MonitorView />;
       case '/tools': return <ToolsView />;
+      case '/audit': return <AuditLogView />;
       case '/export': return <ExportView />;
       case '/settings': return <SettingsView />;
       case '/docs': return <HelpView />;

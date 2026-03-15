@@ -338,6 +338,71 @@ def _check_regulated(text: str, allowed: Optional[List[str]] = None) -> List[str
 # Public API
 # ---------------------------------------------------------------------------
 
+def _check_semantic_llm(text: str, sem_cfg: Dict[str, Any]) -> tuple:
+    """GUARD-5: Use an LLM to semantically classify content.
+
+    Returns (flagged: bool, category: str).
+    Fails open — if LLM is unreachable or returns unexpected output, returns (False, "").
+
+    Config example::
+
+        "semantic": {
+          "enabled": true,
+          "action": "block",
+          "categories": ["harmful", "sexual", "violence", "hate"],
+          "threshold": 0.7,
+          "endpoint": "http://localhost:1234/v1/chat/completions",
+          "model": "local-model"
+        }
+    """
+    import os as _os
+    import json as _json
+    import urllib.request as _req
+    import urllib.error as _uerr
+
+    categories = sem_cfg.get("categories", ["harmful", "sexual", "violence", "hate"])
+    endpoint = sem_cfg.get("endpoint") or _os.getenv(
+        "LM_STUDIO_CHAT_URL", "http://localhost:1234/v1/chat/completions"
+    )
+    model = sem_cfg.get("model") or _os.getenv("LM_STUDIO_MODEL", "local-model")
+    timeout = int(sem_cfg.get("timeout_seconds", 5))
+
+    cats_str = ", ".join(categories)
+    prompt = (
+        f"Classify the following text. Reply with a single JSON object: "
+        f'{{ "flagged": true/false, "category": "<one of {cats_str} or none>" }}. '
+        f"Do not explain. Text: '''{text[:500]}'''"
+    )
+    payload = _json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 64,
+        "temperature": 0,
+    }).encode("utf-8")
+
+    try:
+        http_req = _req.Request(
+            endpoint,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _req.urlopen(http_req, timeout=timeout) as resp:
+            body = _json.loads(resp.read().decode("utf-8", errors="replace"))
+        raw = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        # Extract JSON from the response
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end > start:
+            parsed = _json.loads(raw[start:end + 1])
+            flagged = bool(parsed.get("flagged", False))
+            category = str(parsed.get("category", ""))
+            return flagged, category
+    except Exception as exc:
+        logger.debug("Semantic guardrail LLM call failed (fail-open): %s", exc)
+    return False, ""
+
+
 def apply_guardrails(
     text: str,
     guardrails_config: Dict[str, Any],
@@ -442,6 +507,20 @@ def apply_guardrails(
                         f"[{cat.upper()}_ADVICE_REDACTED]", result
                     )
                 _record_violation(session_id, run_id, "regulated_advice", action, text)
+
+    # ── GUARD-5: Semantic LLM-based classification ──────────────────────────
+    sem_cfg = guardrails_config.get("semantic") or {}
+    if sem_cfg.get("enabled"):
+        action = sem_cfg.get("action", "block")
+        flagged, category = _check_semantic_llm(result, sem_cfg)
+        if flagged:
+            msg = f"{prefix}Semantic guardrail flagged content as '{category}'"
+            logger.warning("Guardrail [semantic] %s", msg)
+            _record_violation(session_id, run_id, "semantic", action, text)
+            if action == "block":
+                raise GuardrailViolation("semantic", msg)
+            elif action == "redact":
+                result = f"[SEMANTIC_FLAGGED:{category.upper()}_REDACTED]"
 
     return result
 

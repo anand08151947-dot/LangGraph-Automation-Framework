@@ -1,0 +1,64 @@
+{
+  "workflow_name": "Supervisor Pattern with Fallback Routing",
+  "description": "Demonstrates a supervisor agent that routes tasks to specialist worker agents, with a fallback when no specialist matches.",
+  "supervisor": {
+    "enabled": true,
+    "agent_id": "supervisor",
+    "routing_key": "next_agent",
+    "fallback": "generalist_worker",
+    "max_iterations": 5
+  },
+  "agents": [
+    {
+      "id": "supervisor",
+      "name": "Supervisor Agent",
+      "type": "supervisor",
+      "model": "gpt-4-1106-preview",
+      "prompt": "You are a supervisor that routes tasks to specialists. Given the task: {{task}}\n\nAvailable workers: code_writer, data_analyst, content_writer, generalist_worker.\n\nDecide which worker should handle this. Reply with a JSON object: {\"next_agent\": \"<worker_name>\", \"instruction\": \"<specific instruction for the worker>\"}. Reply with {\"next_agent\": \"END\"} when the task is complete.",
+      "output_schema": {
+        "format": "json",
+        "required_fields": ["next_agent"]
+      }
+    },
+    {
+      "id": "code_writer",
+      "name": "Code Writer",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "You are an expert software engineer. Complete this coding task: {{instruction}}",
+      "output_schema": {"format": "text"},
+      "next": "supervisor"
+    },
+    {
+      "id": "data_analyst",
+      "name": "Data Analyst",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "You are a data analyst. Analyse and interpret: {{instruction}}",
+      "output_schema": {"format": "text"},
+      "next": "supervisor"
+    },
+    {
+      "id": "content_writer",
+      "name": "Content Writer",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "You are a content writer. Create compelling content for: {{instruction}}",
+      "output_schema": {"format": "text"},
+      "next": "supervisor"
+    },
+    {
+      "id": "generalist_worker",
+      "name": "Generalist Worker",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "You are a versatile assistant. Handle this general task: {{instruction}}",
+      "output_schema": {"format": "text"},
+      "next": "supervisor"
+    }
+  ],
+  "entry_point": "supervisor",
+  "initial_state": {
+    "task": "Write a Python function to parse JSON logs and generate a monthly summary CSV."
+  }
+}

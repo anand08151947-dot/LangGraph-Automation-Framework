@@ -9,6 +9,7 @@ export const NAV_ITEMS = [
   { label: 'Translation', icon: <i className="fas fa-language"></i>, path: '/translation' },
   { label: 'Orchestration', icon: <i className="fas fa-microchip"></i>, path: '/monitor' },
   { label: 'Tool Registry', icon: <i className="fas fa-plug"></i>, path: '/tools' },
+  { label: 'Audit Log', icon: <i className="fas fa-clipboard-list"></i>, path: '/audit' },
   { label: 'Artifact Export', icon: <i className="fas fa-download"></i>, path: '/export' },
   { label: 'Settings', icon: <i className="fas fa-cog"></i>, path: '/settings' },
   { label: 'Help & Docs', icon: <i className="fas fa-question-circle"></i>, path: '/docs' },

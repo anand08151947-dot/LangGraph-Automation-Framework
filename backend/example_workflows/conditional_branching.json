@@ -1,0 +1,59 @@
+{
+  "workflow_name": "Conditional Branching Example",
+  "description": "Demonstrates if/else routing between agents based on classifier output.",
+  "agents": [
+    {
+      "id": "classifier",
+      "name": "Intent Classifier",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "Classify the user's intent. Reply with exactly one word: 'technical', 'billing', or 'general'.",
+      "output_schema": {"format": "text"},
+      "next": "route_intent"
+    },
+    {
+      "id": "route_intent",
+      "name": "Intent Router",
+      "type": "router",
+      "routing": {
+        "type": "conditional",
+        "rules": [
+          {"condition": "state['classifier'].strip() == 'technical'", "next": "tech_support"},
+          {"condition": "state['classifier'].strip() == 'billing'",   "next": "billing_agent"},
+          {"condition": "true",                                        "next": "general_agent"}
+        ]
+      }
+    },
+    {
+      "id": "tech_support",
+      "name": "Technical Support Agent",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "You are a technical support specialist. Resolve the user's technical issue: {{user_input}}",
+      "output_schema": {"format": "text"},
+      "next": "END"
+    },
+    {
+      "id": "billing_agent",
+      "name": "Billing Agent",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "You are a billing specialist. Address the user's billing concern: {{user_input}}",
+      "output_schema": {"format": "text"},
+      "next": "END"
+    },
+    {
+      "id": "general_agent",
+      "name": "General Support Agent",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "You are a general support agent. Help the user with: {{user_input}}",
+      "output_schema": {"format": "text"},
+      "next": "END"
+    }
+  ],
+  "entry_point": "classifier",
+  "initial_state": {
+    "user_input": "My invoice is wrong"
+  }
+}

@@ -105,6 +105,43 @@ class ConfigManager:
     def reload(self):
         self._load_config()
 
+    def watch(self, interval: float = 5.0) -> None:
+        """CFG-6: Start a background thread that polls the config file for changes
+        and calls reload() automatically when the file's mtime changes.
+
+        The watcher runs as a daemon thread so it does not prevent process exit.
+        Calling watch() multiple times is safe — subsequent calls are no-ops.
+        """
+        if getattr(self, "_watcher_active", False):
+            return
+        self._watcher_active = True
+        import os as _os
+
+        def _poll():
+            last_mtime = None
+            while getattr(self, "_watcher_active", True):
+                try:
+                    mtime = _os.path.getmtime(self.config_path)
+                    if last_mtime is not None and mtime != last_mtime:
+                        import logging as _log
+                        _log.getLogger(__name__).info(
+                            "CFG-6: config file changed, reloading %s", self.config_path
+                        )
+                        with self._lock:
+                            self._load_config()
+                    last_mtime = mtime
+                except Exception:
+                    pass
+                import time as _time
+                _time.sleep(interval)
+
+        t = threading.Thread(target=_poll, daemon=True, name="config-watcher")
+        t.start()
+
+    def stop_watch(self) -> None:
+        """Stop the config file watcher thread."""
+        self._watcher_active = False
+
     @property
     def config(self) -> Dict[str, Any]:
         return self._config

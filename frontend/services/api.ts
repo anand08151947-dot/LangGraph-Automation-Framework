@@ -214,3 +214,15 @@ export const getTemplateDiff = async (name: string, v1: string, v2: string): Pro
   const res = await api.get(`/templates/diff/${encodeURIComponent(name)}/${encodeURIComponent(v1)}/${encodeURIComponent(v2)}`);
   return res.data;
 };
+
+// FE-UX-8: Audit log — guardrail violations and observability events
+export const getGuardrailViolations = async (sessionId?: string): Promise<any> => {
+  const params = sessionId ? { session_id: sessionId } : {};
+  const res = await api.get('/guardrail-violations', { params });
+  return res.data;
+};
+
+export const getEvents = async (sessionId: string): Promise<any> => {
+  const res = await api.get(`/events/${encodeURIComponent(sessionId)}`);
+  return res.data;
+};

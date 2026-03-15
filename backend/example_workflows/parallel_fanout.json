@@ -1,0 +1,57 @@
+{
+  "workflow_name": "Parallel Agent Fan-Out",
+  "description": "Demonstrates parallel execution of multiple agents (Send API fan-out) whose results are aggregated by a collector node.",
+  "agents": [
+    {
+      "id": "dispatcher",
+      "name": "Task Dispatcher",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "You are a task coordinator. Acknowledge the research request and list the 3 sub-topics to research in parallel for: {{topic}}",
+      "output_schema": {"format": "text"},
+      "next": ["researcher_1", "researcher_2", "researcher_3"],
+      "parallel": true
+    },
+    {
+      "id": "researcher_1",
+      "name": "Historical Researcher",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "Research the HISTORICAL background of: {{topic}}. Provide 3-5 key facts.",
+      "output_schema": {"format": "text"},
+      "next": "aggregator"
+    },
+    {
+      "id": "researcher_2",
+      "name": "Current State Researcher",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "Research the CURRENT STATE of: {{topic}}. Provide 3-5 recent developments.",
+      "output_schema": {"format": "text"},
+      "next": "aggregator"
+    },
+    {
+      "id": "researcher_3",
+      "name": "Future Trends Researcher",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "Research FUTURE TRENDS related to: {{topic}}. Provide 3-5 predictions.",
+      "output_schema": {"format": "text"},
+      "next": "aggregator"
+    },
+    {
+      "id": "aggregator",
+      "name": "Results Aggregator",
+      "type": "llm",
+      "model": "gpt-4-1106-preview",
+      "prompt": "Synthesize these three research perspectives into a cohesive report:\n\nHistorical: {{researcher_1}}\n\nCurrent: {{researcher_2}}\n\nFuture: {{researcher_3}}",
+      "output_schema": {"format": "text"},
+      "wait_for": ["researcher_1", "researcher_2", "researcher_3"],
+      "next": "END"
+    }
+  ],
+  "entry_point": "dispatcher",
+  "initial_state": {
+    "topic": "Artificial Intelligence in Healthcare"
+  }
+}
