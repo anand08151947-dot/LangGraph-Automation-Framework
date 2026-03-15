@@ -52,7 +52,14 @@ export enum WorkflowStatus {
   RUNNING = 'RUNNING',
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
-  PENDING = 'PENDING'
+  PENDING = 'PENDING',
+  // Backend lowercase variants
+  running = 'running',
+  completed = 'completed',
+  failed = 'failed',
+  started = 'started',
+  cancelled = 'cancelled',
+  error = 'error',
 }
 
 export interface Agent {
