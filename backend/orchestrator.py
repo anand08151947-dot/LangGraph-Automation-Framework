@@ -12,8 +12,10 @@ Features:
 """
 
 import math
+import json
 import threading
 import time
+import concurrent.futures
 from typing import Any, Dict, Optional
 
 from graph_factory import GraphFactory, _make_default_state
@@ -58,6 +60,16 @@ class Orchestrator:
         self.memory_manager = MemoryManager()
         self.observability = ObservabilityManager(["logging"])
         self.max_retries = max_retries
+        # ORCH-4: per-session locks to prevent concurrent STM corruption
+        self._session_locks: Dict[str, threading.Lock] = {}
+        self._session_locks_mutex = threading.Lock()
+
+    def _get_session_lock(self, session_id: str) -> threading.Lock:
+        """Return (creating if needed) the per-session lock."""
+        with self._session_locks_mutex:
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = threading.Lock()
+            return self._session_locks[session_id]
 
     # ------------------------------------------------------------------
     # Public API
@@ -103,6 +115,14 @@ class Orchestrator:
         max_retries_cfg = int(retry_policy.get("max_retries", self.max_retries))
         backoff_strategy = retry_policy.get("backoff_strategy", "fixed")
         backoff_base = float(retry_policy.get("backoff_base_seconds", 1.0))
+
+        # ORCH-1: Per-node timeout (None = no limit)
+        node_timeout_seconds = runtime_cfg.get("node_timeout_seconds")
+
+        # ORCH-2: Circuit-breaker — track consecutive per-node failures
+        cb_threshold = int(retry_policy.get("circuit_breaker_threshold", max_retries_cfg + 1))
+        _node_failure_counts: Dict[str, int] = {}
+        _open_circuits: Dict[str, str] = {}  # node_name -> reason
 
         # Build per-run MemoryManager from config (fall back to instance default)
         memory_manager = _build_memory_manager(memory_cfg) if memory_cfg else self.memory_manager
@@ -155,130 +175,210 @@ class Orchestrator:
         step_idx = 0
         last_state = dict(current_state)
 
+        # ORCH-4: acquire session lock to prevent concurrent STM corruption
+        _session_lock = self._get_session_lock(session_id) if session_id else None
+
+        def _advance(stream_iter):
+            """Advance the graph stream by one step; returns (step_output, done)."""
+            try:
+                return next(stream_iter), False
+            except StopIteration:
+                return None, True
+
         try:
-            for step_output in graph.stream(current_state):
-                # ORC-6: Check timeout at every step boundary
-                if _timed_out.is_set():
-                    raise TimeoutError(
-                        f"Workflow exceeded timeout of {timeout_seconds}s "
-                        f"after {step_idx} steps."
-                    )
-
-                retry_count = 0
+            if _session_lock:
+                _session_lock.acquire()
+            stream_iter = iter(graph.stream(current_state))
+            # ORCH-1: use a thread pool so we can apply a per-node wall-clock timeout.
+            # We manage shutdown manually (cancel_futures=True) to avoid blocking on
+            # interpreter teardown (e.g., during tests).
+            _exec = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
                 while True:
+                    # ORC-6: Check workflow-level timeout at every step boundary
+                    if _timed_out.is_set():
+                        raise TimeoutError(
+                            f"Workflow exceeded timeout of {timeout_seconds}s "
+                            f"after {step_idx} steps."
+                        )
+
+                    # ORCH-1: advance the stream with a per-node deadline
+                    _future = _exec.submit(_advance, stream_iter)
                     try:
-                        step_start = time.time()  # ORC-3: per-step start time
+                        step_output, _done = _future.result(timeout=node_timeout_seconds)
+                    except concurrent.futures.TimeoutError:
+                        raise TimeoutError(
+                            f"Node timed out after {node_timeout_seconds}s at step {step_idx}. "
+                            "Increase runtime.node_timeout_seconds or fix the blocking node."
+                        )
+                    if _done:
+                        break
 
-                        # Merge node updates into running state
-                        _human_pause_node = None
-                        for node_name, node_updates in step_output.items():
-                            if isinstance(node_updates, dict):
-                                last_state.update(node_updates)
-                            # Check if this node is a human_node checkpoint
-                            nodes_cfg = config_json.get("nodes", [])
-                            for n in nodes_cfg:
-                                if n.get("id") == node_name and n.get("type") == "human_node":
-                                    _human_pause_node = node_name
-                                    break
+                    # Identify the node name from this step's output
+                    _current_node = next(iter(step_output), "") if step_output else ""
 
-                        sender = last_state.get("sender", "")
-
-                        # Pre-step hooks
-                        observability.run_plugin_hooks("pre_step", {
+                    # ORCH-2: skip nodes whose circuit is open
+                    if _current_node and _current_node in _open_circuits:
+                        reason = _open_circuits[_current_node]
+                        observability.log_event("circuit_open_skip", {
+                            "node": _current_node,
+                            "reason": reason,
                             "step_idx": step_idx,
-                            "state": last_state,
                         })
+                        step_idx += 1
+                        continue
 
-                        # ORC-5: Log state transition (conditional)
-                        if _obs_log_transitions:
-                            observability.log_event("agent_action", {
+                    retry_count = 0
+                    while True:
+                        try:
+                            step_start = time.time()  # ORC-3: per-step start time
+
+                            # Merge node updates into running state
+                            _human_pause_node = None
+                            for node_name, node_updates in step_output.items():
+                                if isinstance(node_updates, dict):
+                                    last_state.update(node_updates)
+                                # Check if this node is a human_node checkpoint
+                                nodes_cfg = config_json.get("nodes", [])
+                                for n in nodes_cfg:
+                                    if n.get("id") == node_name and n.get("type") == "human_node":
+                                        _human_pause_node = node_name
+                                        break
+
+                            sender = last_state.get("sender", "")
+
+                            # Pre-step hooks
+                            observability.run_plugin_hooks("pre_step", {
                                 "step_idx": step_idx,
-                                "sender": sender,
-                                "messages": last_state.get("messages", []),
-                                "metadata": last_state.get("metadata", {}),
+                                "state": last_state,
                             })
 
-                        # ORC-5: Trace the step (conditional on trace_nodes)
-                        if _obs_trace_nodes and session_id:
-                            observability.trace_step(session_id, {
-                                "step_idx": step_idx,
-                                "sender": sender,
-                                "node": sender,
-                                "metadata": last_state.get("metadata", {}),
-                            })
+                            # ORC-5: Log state transition (conditional)
+                            if _obs_log_transitions:
+                                observability.log_event("agent_action", {
+                                    "step_idx": step_idx,
+                                    "sender": sender,
+                                    "messages": last_state.get("messages", []),
+                                    "metadata": last_state.get("metadata", {}),
+                                })
 
-                        # ORC-5: Capture agent outputs (conditional)
-                        if _obs_capture_outputs:
-                            observability.record_metric(
-                                "step_executed", 1,
-                                {"step_idx": step_idx, "sender": sender},
-                            )
+                            # ORC-5: Trace the step (conditional on trace_nodes)
+                            if _obs_trace_nodes and session_id:
+                                observability.trace_step(session_id, {
+                                    "step_idx": step_idx,
+                                    "sender": sender,
+                                    "node": sender,
+                                    "metadata": last_state.get("metadata", {}),
+                                })
 
-                        # ORC-3: capture end time and compute duration
-                        step_end = time.time()
-                        duration_ms = round((step_end - step_start) * 1000, 3)
+                            # ORC-5: Capture agent outputs (conditional)
+                            if _obs_capture_outputs:
+                                observability.record_metric(
+                                    "step_executed", 1,
+                                    {"step_idx": step_idx, "sender": sender},
+                                )
 
-                        # Persist STM (latest state) and append LTM entry
-                        if session_id:
-                            memory_manager.save_stm(session_id, last_state)
-                            memory_manager.append_ltm(session_id, {
-                                "step_idx": step_idx,
-                                "messages": last_state.get("messages", []),
-                                "sender": sender,
-                                "metadata": last_state.get("metadata", {}),
-                                "start_time": step_start,   # ORC-3
-                                "end_time": step_end,        # ORC-3
-                                "duration_ms": duration_ms,  # ORC-3
-                            })
+                            # ORC-3: capture end time and compute duration
+                            step_end = time.time()
+                            duration_ms = round((step_end - step_start) * 1000, 3)
 
-                        # HITL: pause at human_node checkpoint
-                        if _human_pause_node:
-                            last_state["__awaiting_approval__"] = True
-                            last_state["__checkpoint_node__"] = _human_pause_node
+                            # Persist STM (latest state) and append LTM entry
                             if session_id:
                                 memory_manager.save_stm(session_id, last_state)
-                            raise HumanApprovalRequired(
-                                run_id=session_id or "",
-                                checkpoint_node=_human_pause_node,
-                                state=dict(last_state),
-                            )
+                                memory_manager.append_ltm(session_id, {
+                                    "step_idx": step_idx,
+                                    "messages": last_state.get("messages", []),
+                                    "sender": sender,
+                                    "metadata": last_state.get("metadata", {}),
+                                    "start_time": step_start,   # ORC-3
+                                    "end_time": step_end,        # ORC-3
+                                    "duration_ms": duration_ms,  # ORC-3
+                                })
 
-                        # Post-step hooks
-                        observability.run_plugin_hooks("post_step", {
-                            "step_idx": step_idx,
-                            "state": last_state,
-                        })
+                            # ORCH-2: on success, reset the node's consecutive failure count
+                            if _current_node:
+                                _node_failure_counts.pop(_current_node, None)
 
-                        break  # success – exit retry loop
+                            # HITL: pause at human_node checkpoint
+                            if _human_pause_node:
+                                last_state["__awaiting_approval__"] = True
+                                last_state["__checkpoint_node__"] = _human_pause_node
+                                if session_id:
+                                    memory_manager.save_stm(session_id, last_state)
+                                raise HumanApprovalRequired(
+                                    run_id=session_id or "",
+                                    checkpoint_node=_human_pause_node,
+                                    state=dict(last_state),
+                                )
 
-                    except HumanApprovalRequired:
-                        raise  # propagate without retry
-                    except Exception as exc:
-                        observability.log_error(exc, context={
-                            "step_idx": step_idx,
-                            "sender": last_state.get("sender"),
-                            "retry": retry_count,
-                        })
-                        retry_count += 1
-                        if retry_count > max_retries_cfg:
-                            raise  # abort after max retries
-                        # ORC-4: Backoff sleep before retry (fixed or exponential)
-                        if backoff_strategy == "exponential":
-                            sleep_s = backoff_base * math.pow(2, retry_count - 1)
-                        else:
-                            sleep_s = backoff_base
-                        time.sleep(min(sleep_s, 30.0))  # cap at 30s
+                            # Post-step hooks
+                            observability.run_plugin_hooks("post_step", {
+                                "step_idx": step_idx,
+                                "state": last_state,
+                            })
 
-                step_idx += 1
+                            break  # success – exit retry loop
 
-                # Honour max_iterations guard (defensive; graph also enforces it)
-                if step_idx >= max_iterations:
-                    break
+                        except HumanApprovalRequired:
+                            raise  # propagate without retry
+                        except Exception as exc:
+                            observability.log_error(exc, context={
+                                "step_idx": step_idx,
+                                "sender": last_state.get("sender"),
+                                "retry": retry_count,
+                            })
+                            retry_count += 1
+
+                            # ORCH-2: track consecutive failures per node and open circuit
+                            if _current_node:
+                                _node_failure_counts[_current_node] = (
+                                    _node_failure_counts.get(_current_node, 0) + 1
+                                )
+                                if _node_failure_counts[_current_node] >= cb_threshold:
+                                    reason = (
+                                        f"Circuit opened after {cb_threshold} consecutive "
+                                        f"failures: {exc}"
+                                    )
+                                    _open_circuits[_current_node] = reason
+                                    observability.log_event("circuit_breaker_open", {
+                                        "node": _current_node,
+                                        "failures": _node_failure_counts[_current_node],
+                                        "reason": reason,
+                                    })
+                                    last_state.setdefault("__circuit_breaker_events__", []).append({
+                                        "node": _current_node, "reason": reason,
+                                        "step_idx": step_idx,
+                                    })
+                                    break  # skip this node; move to next step
+
+                            if retry_count > max_retries_cfg:
+                                raise  # abort after max retries
+                            # ORC-4: Backoff sleep before retry (fixed or exponential) with ±20% jitter
+                            if backoff_strategy == "exponential":
+                                sleep_s = backoff_base * math.pow(2, retry_count - 1)
+                            else:
+                                sleep_s = backoff_base
+                            import random
+                            jitter = sleep_s * 0.2 * (random.random() * 2 - 1)  # ORCH-5: ±20%
+                            time.sleep(min(max(0, sleep_s + jitter), 30.0))  # cap at 30s
+
+                    step_idx += 1
+
+                    # Honour max_iterations guard (defensive; graph also enforces it)
+                    if step_idx >= max_iterations:
+                        break
+            finally:
+                # ORCH-1: shut down without waiting so interpreter teardown
+                # (e.g., during tests) doesn't block on in-flight futures.
+                _exec.shutdown(wait=False, cancel_futures=True)
 
         finally:
             # ORC-6: always cancel the timer to avoid resource leaks
             if _timer:
                 _timer.cancel()
+            # ORCH-4: release session lock
+            if _session_lock and _session_lock.locked():
+                _session_lock.release()
 
         return last_state
 
