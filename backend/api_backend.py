@@ -38,7 +38,9 @@ app.add_middleware(
 
 # --- Enhanced Config-Driven Architecture Endpoints ---
 @app.get("/config/summary")
-def config_summary():
+def config_summary(request: Request):
+    # SEC-5: require admin
+    _require_admin(request)
     # Summarize config for UI/LLM
     cfg = config_mgr.config
     summary = {
@@ -49,7 +51,8 @@ def config_summary():
         "num_templates": len(template_manager.list_templates()),
         "num_tools": len(tool_registry.list_tools()),
     }
-    return {"summary": summary}
+    # SEC-4: recursively redact any nested secrets
+    return {"summary": _redact_secrets(summary)}
 
 @app.post("/config/generate_llm")
 def generate_config_llm(request: dict = Body(...)):
@@ -110,7 +113,9 @@ def add_audit(action: str, details: dict):
     return {"status": "logged"}
 
 @app.get("/audit")
-def get_audit():
+def get_audit(request: Request):
+    # SEC-5: require admin
+    _require_admin(request)
     return {"audit_log": audit_log}
 # --- Config Management Endpoints ---
 @app.get("/config")
@@ -119,13 +124,24 @@ def get_config():
     return {"config": config_mgr.config, "env": config_mgr.env}
 
 @app.post("/config/reload")
-def reload_config():
+def reload_config(request: Request):
     """Hot-reload the config from disk."""
-    try:
-        config_mgr.reload()
-        return {"status": "reloaded", "config": config_mgr.config, "env": config_mgr.env}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Reload failed: {e}")
+    # SEC-5: require admin
+    _require_admin(request)
+    # SEC-3: reject reload while active workflow runs are in progress
+    with _active_run_lock:
+        if _active_run_count > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot reload config: {_active_run_count} active run(s) in progress. Try again when all runs have completed."
+            )
+    with _config_reload_lock:
+        try:
+            config_mgr.reload()
+            # SEC-4: redact secrets from the reloaded config before returning
+            return {"status": "reloaded", "config": _redact_secrets(config_mgr.config), "env": config_mgr.env}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Reload failed: {e}")
 
 @app.post("/config/validate")
 def validate_config():
@@ -285,13 +301,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger("LangGraphAPI")
 
+# SEC-3: Read-write lock for config reloads. Shared reads, exclusive write.
+import threading as _threading
+_config_reload_lock = _threading.RLock()
+_active_run_count = 0
+_active_run_lock = _threading.Lock()
+
+def _increment_active_runs():
+    global _active_run_count
+    with _active_run_lock:
+        _active_run_count += 1
+
+def _decrement_active_runs():
+    global _active_run_count
+    with _active_run_lock:
+        _active_run_count -= 1
+
+# SEC-4: Recursive secret redaction helper
+_SECRET_KEY_PATTERNS = re.compile(r"key|secret|token|password|credential|auth|passwd", re.IGNORECASE)
+
+def _redact_secrets(obj):
+    """Recursively redact dict values whose keys look like secrets."""
+    if isinstance(obj, dict):
+        return {
+            k: "REDACTED" if _SECRET_KEY_PATTERNS.search(k) else _redact_secrets(v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact_secrets(v) for v in obj]
+    return obj
+
+# SEC-5: Helper to require admin role (API key path skips role check; JWT path enforces it)
+def _require_admin(request: Request):
+    try:
+        access_control.check_api_key(request)
+    except HTTPException:
+        access_control.check_jwt(request)
+        access_control.check_role(request, "admin")
+
 # --- Config Manager Instance ---
 # Use path relative to this module so running from other cwd works
 config_mgr = ConfigManager(os.path.join(os.path.dirname(__file__), "config.json"))
 # --- Access Control Instance ---
 access_control = AccessControl(
     api_keys=list(config_mgr.get("api_keys", {}).values()),
-    jwt_secret=config_mgr.get("api_keys", {}).get("jwt_secret", "secret"),
+    jwt_secret=config_mgr.get("api_keys", {}).get("jwt_secret"),  # SEC-1: no fallback; env var required
     user_roles=config_mgr.get("user_roles", {})
 )
 # --- Observability Manager Instance ---
@@ -624,6 +678,7 @@ No dependency on this workbench. The bundle is fully self-contained.
 def _run_workflow_async(run_id, config_json):
     import time as _t
     start = _t.time()
+    _increment_active_runs()  # SEC-3: track active runs for reload guard
     workflow_status.setdefault(run_id, {})
     workflow_status[run_id].update({"status": "running", "result": None})
     upsert_run(run_id, status="running", logs=json.dumps([f"Workflow {run_id} started."]))
@@ -633,6 +688,7 @@ def _run_workflow_async(run_id, config_json):
         workflow_status[run_id].update({"status": "error", "result": f"Orchestrator not available: {err}"})
         upsert_run(run_id, status="error", result=f"Orchestrator not available: {err}")
         logger.error(f"Workflow {run_id} failed: Orchestrator not available: {err}")
+        _decrement_active_runs()
         return
     try:
         result = orchestrator.run_workflow(config_json, session_id=run_id)
@@ -661,6 +717,8 @@ def _run_workflow_async(run_id, config_json):
                    end_time=__import__("datetime").datetime.utcnow(),
                    logs=json.dumps([f"Workflow {run_id} failed: {str(e)}"]))
         logger.error(f"Workflow {run_id} failed: {e}")
+    finally:
+        _decrement_active_runs()  # SEC-3: always release the counter
 
 @app.post("/orchestrate_async")
 def orchestrate_async(req: OrchestrationRequest, template_name: Optional[str] = None):
@@ -679,10 +737,8 @@ def orchestrate_async(req: OrchestrationRequest, template_name: Optional[str] = 
     try:
         import os, json, copy as _copy
         if os.getenv("PRINT_RUN_CONFIG", "false").lower() == "true":
-            # Create a safe copy and redact common secrets
-            cfg_copy = _copy.deepcopy(req.config_json)
-            if isinstance(cfg_copy, dict) and "api_keys" in cfg_copy:
-                cfg_copy["api_keys"] = {k: "REDACTED" for k in cfg_copy.get("api_keys", {})}
+            # SEC-4: recursively redact secrets before logging
+            cfg_copy = _redact_secrets(_copy.deepcopy(req.config_json))
             logger.info(f"Run {run_id} config:\n{json.dumps(cfg_copy, indent=2)}")
             try:
                 observability.log_event("run_config", {"run_id": run_id, "template": template_name})
@@ -1050,7 +1106,8 @@ def update_llm_config(update: dict = Body(...)):
         return {"status": "updated", "provider": provider}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update config: {e}")
-
+
+
 # --- SET-8: RAG Config Endpoints ---
 @app.put("/config/rag")
 def update_rag_config(update: dict = Body(...)):

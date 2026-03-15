@@ -11,10 +11,26 @@ import os
 import jwt
 
 
+class ConfigurationError(RuntimeError):
+    """Raised when a required configuration value is missing at startup."""
+
+
+def _load_jwt_secret(provided: Optional[str]) -> str:
+    """Return the JWT secret, preferring the provided value then the env var.
+    Raises ConfigurationError if neither is available."""
+    secret = provided or os.getenv("JWT_SECRET")
+    if not secret:
+        raise ConfigurationError(
+            "JWT_SECRET environment variable is not set. "
+            "Set it to a strong random value before starting the API."
+        )
+    return secret
+
+
 class AccessControl:
     def __init__(self, api_keys: Optional[List[str]] = None, jwt_secret: Optional[str] = None, user_roles: Optional[Dict[str, List[str]]] = None):
         self.api_keys = api_keys or []
-        self.jwt_secret = jwt_secret or os.getenv("JWT_SECRET", "secret")
+        self.jwt_secret = _load_jwt_secret(jwt_secret)
         self.user_roles = user_roles or {}  # {username: [roles]}
 
     def check_api_key(self, request: Request):
@@ -30,9 +46,16 @@ class AccessControl:
         if not token or not token.startswith("Bearer "):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid JWT")
         try:
-            payload = jwt.decode(token[7:], self.jwt_secret, algorithms=["HS256"])
+            payload = jwt.decode(
+                token[7:],
+                self.jwt_secret,
+                algorithms=["HS256"],
+                options={"require": ["exp"]},  # SEC-2: enforce expiration claim
+            )
             request.state.user = payload.get("sub")
             request.state.roles = payload.get("roles", [])
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token Expired")
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"JWT error: {e}")
 
