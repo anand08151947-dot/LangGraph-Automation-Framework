@@ -60,6 +60,17 @@ _PII_PATTERNS: List[Tuple[str, re.Pattern]] = [
      re.compile(r'\b(?:\d{4}[\s\-]?){3}\d{4}\b')),
     ("ip_address",
      re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')),
+    # GUARD-4: Extended PII patterns
+    ("dob",
+     re.compile(r'\b(?:0?[1-9]|[12]\d|3[01])[-/.](?:0?[1-9]|1[0-2])[-/.](?:19|20)\d{2}\b')),
+    ("passport",
+     re.compile(r'\b[A-Z]{1,2}\d{6,9}\b')),
+    ("iban",
+     re.compile(r'\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b')),
+    ("drivers_license",
+     re.compile(r'\b[A-Z]{1,2}\d{5,8}\b')),
+    ("nhs_number",  # UK NHS
+     re.compile(r'\b\d{3}[\s\-]\d{3}[\s\-]\d{4}\b')),
 ]
 
 # ---------------------------------------------------------------------------

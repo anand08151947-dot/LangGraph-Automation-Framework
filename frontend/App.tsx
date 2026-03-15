@@ -10,6 +10,7 @@ import ExportView from './views/ExportView';
 import SettingsView from './views/SettingsView';
 import HelpView from './views/HelpView';
 import { TemplateInfo } from './types';
+import { ToastProvider } from './components/Toast';
 
 const App: React.FC = () => {
   const [currentPath, setCurrentPath] = useState('/');
@@ -53,10 +54,14 @@ const App: React.FC = () => {
   };
 
   return (
-    <Layout activePath={currentPath} onNavigate={navigate}>
-      {renderContent()}
-    </Layout>
+    <ToastProvider>
+      <Layout activePath={currentPath} onNavigate={navigate}>
+        {renderContent()}
+      </Layout>
+    </ToastProvider>
   );
 };
 
+
 export default App;
+

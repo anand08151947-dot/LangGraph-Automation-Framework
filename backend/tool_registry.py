@@ -51,11 +51,35 @@ class ToolRegistry:
             return self._tools.get(name)
 
     def health_check(self) -> List[Dict[str, Any]]:
-        # Placeholder: In real use, ping/check each tool
+        """MCP-5: Real health check — probe each tool's health_url (if configured).
+
+        For tools that declare a ``health_url`` key, an HTTP GET is issued with a
+        3-second timeout.  A 2xx response marks the tool ``healthy``; any error
+        (network, non-2xx, timeout) marks it ``unhealthy``.
+
+        Tools without a ``health_url`` retain their current status unchanged.
+        """
+        import urllib.request
+        import urllib.error
+
         with self._lock:
-            for tool in self._tools.values():
-                tool["status"] = "healthy"  # Simulate all healthy
-            return self.list_tools()
+            tools_snapshot = list(self._tools.items())
+
+        results = []
+        for name, meta in tools_snapshot:
+            health_url = meta.get("health_url")
+            if health_url:
+                try:
+                    req = urllib.request.urlopen(health_url, timeout=3)
+                    new_status = "healthy" if 200 <= req.status < 300 else "unhealthy"
+                except Exception:
+                    new_status = "unhealthy"
+                with self._lock:
+                    if name in self._tools:
+                        self._tools[name]["status"] = new_status
+            results.append({"name": name, **meta, "status": self._tools.get(name, meta).get("status", "unknown")})
+
+        return results
 
 # Example usage:
 # registry = ToolRegistry()

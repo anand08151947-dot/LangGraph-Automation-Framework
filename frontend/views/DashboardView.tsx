@@ -5,6 +5,21 @@ import { WorkflowRun, WorkflowStatus } from '../types';
 import { getWorkflowRuns } from '../services/api.runs';
 import branding from '../branding';
 
+const MonitorStatusValues = new Set(['completed', 'failed', 'cancelled', 'error', 'running', 'started']);
+
+/** FE-UX-1: Derive a human-readable activity event from a run. */
+function runToActivityItem(run: WorkflowRun): { time: string; text: string } {
+  const status = (run.status as string).toLowerCase();
+  const name = run.name || `Run ${(run.id || '').slice(0, 8)}`;
+  let text = '';
+  if (status === 'completed') text = `Workflow "${name}" completed successfully.`;
+  else if (status === 'failed' || status === 'error') text = `Workflow "${name}" failed.`;
+  else if (status === 'running' || status === 'started') text = `Workflow "${name}" is running.`;
+  else if (status === 'cancelled') text = `Workflow "${name}" was cancelled.`;
+  else text = `Workflow "${name}" — status: ${run.status}.`;
+  return { time: run.startTime || 'recently', text };
+}
+
 const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNavigate }) => {
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
 
@@ -13,10 +28,13 @@ const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNav
   }, []);
 
   const totalRuns = runs.length;
-  const completed = runs.filter(r => r.status === WorkflowStatus.COMPLETED).length;
-  const running = runs.filter(r => r.status === WorkflowStatus.RUNNING).length;
-  const failed = runs.filter(r => r.status === WorkflowStatus.FAILED).length;
+  const completed = runs.filter(r => (r.status as string).toLowerCase() === 'completed').length;
+  const running = runs.filter(r => ['running', 'started'].includes((r.status as string).toLowerCase())).length;
+  const failed = runs.filter(r => ['failed', 'error'].includes((r.status as string).toLowerCase())).length;
   const successRate = totalRuns > 0 ? ((completed / totalRuns) * 100).toFixed(1) : '0';
+
+  // FE-UX-1: Live activity feed from real run data (latest 5 runs)
+  const activityItems = runs.slice(0, 5).map(runToActivityItem);
 
   const stats = [
     { label: 'Total Runs', value: String(totalRuns), icon: 'fa-project-diagram', color: 'text-indigo-600' },
@@ -95,12 +113,21 @@ const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNav
                       <Badge type={run.status} label={run.status} />
                     </td>
                     <td className="py-4 text-right">
-                      <button className="text-slate-400 hover:text-indigo-600 transition-colors" title="View details">
+                      <button
+                        className="text-slate-400 hover:text-indigo-600 transition-colors"
+                        title="View in Monitor"
+                        onClick={() => onNavigate('/monitor')}
+                      >
                         <i className="fas fa-external-link-alt"></i>
                       </button>
                     </td>
                   </tr>
                 ))}
+                {runs.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="py-8 text-center text-slate-400">No runs yet. Start a workflow!</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -113,21 +140,22 @@ const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNav
 
         {/* Quick Help / Activity */}
         <div className="space-y-6">
+          {/* FE-UX-1: Live activity feed derived from real run data */}
           <Card title="Activity Feed">
             <div className="space-y-6">
-              {[
-                { time: '10m ago', text: 'Workflow "Research Task" completed successfully.' },
-                { time: '2h ago', text: 'New template "Customer Support" added to library.' },
-                { time: '5h ago', text: 'Updated API key for OpenAI module.' },
-              ].map((item, i) => (
-                <div key={i} className="flex gap-4">
-                  <div className="mt-1 w-2 h-2 rounded-full bg-indigo-500 ring-4 ring-indigo-50"></div>
-                  <div>
-                    <p className="text-sm text-slate-700">{item.text}</p>
-                    <p className="text-xs text-slate-400 font-medium">{item.time}</p>
+              {activityItems.length > 0 ? (
+                activityItems.map((item, i) => (
+                  <div key={i} className="flex gap-4">
+                    <div className="mt-1 w-2 h-2 rounded-full bg-indigo-500 ring-4 ring-indigo-50 flex-shrink-0"></div>
+                    <div>
+                      <p className="text-sm text-slate-700">{item.text}</p>
+                      <p className="text-xs text-slate-400 font-medium">{item.time}</p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <div className="text-sm text-slate-400">No recent activity. Run a workflow to see events here.</div>
+              )}
             </div>
           </Card>
 
@@ -145,3 +173,4 @@ const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNav
 };
 
 export default DashboardView;
+

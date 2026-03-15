@@ -807,6 +807,22 @@ def resume_run(run_id: str, req: ResumeRequest):
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Orchestrator not available")
 
+    # ORCH-7: Validate approval_input against the checkpoint's declared schema (if any)
+    _checkpoint_schema = status.get("approval_schema")
+    if _checkpoint_schema and isinstance(_checkpoint_schema, dict):
+        _missing = [k for k in _checkpoint_schema.get("required", []) if k not in req.approval_input]
+        if _missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"approval_input missing required fields: {_missing}",
+            )
+        _unknown = [k for k in req.approval_input if _checkpoint_schema.get("allowed_keys") and k not in _checkpoint_schema["allowed_keys"]]
+        if _unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"approval_input contains unexpected fields: {_unknown}",
+            )
+
     def _resume():
         try:
             result = orchestrator.resume_run(run_id, req.approval_input, req.config_json)
