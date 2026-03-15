@@ -124,17 +124,57 @@ class ObservabilityManager:
             self.hooks[event_type] = []
         self.hooks[event_type].append(callback)
 
+    def unregister_hook(self, event_type: str, callback: Callable) -> bool:
+        """OBS-4: Remove a previously registered hook callback.
+
+        Returns True if the callback was found and removed, False otherwise.
+        """
+        callbacks = self.hooks.get(event_type, [])
+        if callback in callbacks:
+            callbacks.remove(callback)
+            return True
+        return False
+
+    def _run_hook_with_timeout(
+        self,
+        event_type: str,
+        cb: Callable,
+        data: Dict[str, Any],
+        timeout_s: float = 2.0,
+    ):
+        """OBS-4: Run a single hook callback with a wall-clock timeout.
+
+        Logs a warning if the callback exceeds the timeout but continues
+        execution rather than blocking the orchestration step.
+        """
+        import threading as _threading
+        result = {"done": False, "exc": None}
+
+        def _target():
+            try:
+                cb(data)
+            except Exception as e:
+                result["exc"] = e
+            finally:
+                result["done"] = True
+
+        t = _threading.Thread(target=_target, daemon=True)
+        t.start()
+        t.join(timeout=timeout_s)
+        if not result["done"]:
+            self.logger.warning(
+                json.dumps({"event": "hook_timeout", "hook_event": event_type, "timeout_s": timeout_s}),
+            )
+        elif result["exc"]:
+            self.logger.error(
+                json.dumps({"error": str(result["exc"]), "hook_event": event_type}, default=str),
+            )
+
     def run_plugin_hooks(self, event_type: str, data: Dict[str, Any]):
         """Run all registered plugin hooks for the given event type."""
         for cb in self.hooks.get(event_type, []):
-            try:
-                cb(data)
-            except Exception as e:
-                self.logger.error(json.dumps({"error": str(e), "hook_event": event_type}, default=str))
+            self._run_hook_with_timeout(event_type, cb, data)
 
     def _run_hooks(self, event_type: str, data: Dict[str, Any]):
         for cb in self.hooks.get(event_type, []):
-            try:
-                cb(data)
-            except Exception as e:
-                self.logger.error(json.dumps({"error": str(e), "hook_event": event_type}, default=str))
+            self._run_hook_with_timeout(event_type, cb, data)

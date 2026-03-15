@@ -80,6 +80,7 @@ class Orchestrator:
         config_json: Dict[str, Any],
         session_id: Optional[str] = None,
         initial_state: Optional[Dict[str, Any]] = None,
+        cancel_check_fn: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Run the workflow step-by-step, persisting memory at every step.
 
@@ -87,9 +88,12 @@ class Orchestrator:
         {node_name: state_updates} dicts for each executed node.
 
         Args:
-            config_json:   Workflow config (old agents[] or new nodes[]).
-            session_id:    Unique run identifier used for STM/LTM storage.
-            initial_state: Optional override for the starting state dict.
+            config_json:     Workflow config (old agents[] or new nodes[]).
+            session_id:      Unique run identifier used for STM/LTM storage.
+            initial_state:   Optional override for the starting state dict.
+            cancel_check_fn: Optional zero-argument callable; if it returns
+                             True the orchestrator raises CancelledError after
+                             the current step (API-3).
 
         Returns:
             The final merged state dict (JSON-serializable).
@@ -200,6 +204,12 @@ class Orchestrator:
                         raise TimeoutError(
                             f"Workflow exceeded timeout of {timeout_seconds}s "
                             f"after {step_idx} steps."
+                        )
+
+                    # API-3: Check cancellation flag between steps
+                    if cancel_check_fn is not None and cancel_check_fn():
+                        raise InterruptedError(
+                            f"Workflow {session_id} cancelled after {step_idx} steps."
                         )
 
                     # ORCH-1: advance the stream with a per-node deadline

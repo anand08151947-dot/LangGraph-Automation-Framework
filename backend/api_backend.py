@@ -366,12 +366,33 @@ except Exception as e:
     logger.warning(f"Orchestrator unavailable: {e}")
     orchestrator = None
 workflow_status = {}  # run_id: {status, result}
+# OBS-6: track insertion order so we can evict oldest entries when the cap is reached
+_workflow_status_order: list = []
+_WORKFLOW_STATUS_MAX = 1000  # maximum number of run entries kept in memory
+
+
+def _workflow_status_set(run_id: str, value: dict) -> None:
+    """Set/update a workflow_status entry, evicting the oldest if over cap."""
+    if run_id not in workflow_status:
+        _workflow_status_order.append(run_id)
+        while len(_workflow_status_order) > _WORKFLOW_STATUS_MAX:
+            oldest = _workflow_status_order.pop(0)
+            workflow_status.pop(oldest, None)
+    workflow_status[run_id] = value
 # --- Memory Manager Instance ---
 memory_manager = MemoryManager(
     stm_backend=config_mgr.get("memory", {}).get("backend", "memory"),
     ltm_backend=config_mgr.get("memory", {}).get("backend", "sqlite"),
     ltm_path=config_mgr.get("memory", {}).get("ltm_path", "ltm.db")
 )
+# MEM-5: Run startup LTM pruning across all sessions if a global TTL is configured
+_ltm_global_ttl = float(config_mgr.get("memory", {}).get("ltm_global_ttl_days", 0))
+if _ltm_global_ttl > 0:
+    try:
+        _pruned = memory_manager.prune_ltm_global(_ltm_global_ttl)
+        logger.info(f"Startup LTM prune: removed {_pruned} rows older than {_ltm_global_ttl} days")
+    except Exception as _pe:
+        logger.warning(f"Startup LTM prune failed: {_pe}")
 # Ensure Orchestrator uses the shared memory manager so STM/LTM API endpoints see run data
 if 'orchestrator' in globals() and orchestrator is not None:
     try:
@@ -680,8 +701,11 @@ def _run_workflow_async(run_id, config_json):
     import time as _t
     start = _t.time()
     _increment_active_runs()  # SEC-3: track active runs for reload guard
-    workflow_status.setdefault(run_id, {})
-    workflow_status[run_id].update({"status": "running", "result": None})
+    # OBS-6: update status to running while preserving config/template keys already set
+    if run_id in workflow_status:
+        workflow_status[run_id].update({"status": "running", "result": None})
+    else:
+        _workflow_status_set(run_id, {"status": "running", "result": None})
     upsert_run(run_id, status="running", logs=json.dumps([f"Workflow {run_id} started."]))
     logger.info(f"Workflow {run_id} started.")
     if orchestrator is None:
@@ -692,8 +716,19 @@ def _run_workflow_async(run_id, config_json):
         _decrement_active_runs()
         return
     try:
-        result = orchestrator.run_workflow(config_json, session_id=run_id)
+        # API-3: pass a cancel check function so the orchestrator can honour
+        # cancellation requests set by POST /runs/{run_id}/cancel
+        def _is_cancelled() -> bool:
+            return bool((workflow_status.get(run_id) or {}).get("_cancel_requested"))
+
+        result = orchestrator.run_workflow(config_json, session_id=run_id, cancel_check_fn=_is_cancelled)
         elapsed = f"{_t.time() - start:.2f}s"
+        # Check if we were cancelled mid-run (orchestrator finished but flag was set)
+        if _is_cancelled():
+            workflow_status[run_id].update({"status": "cancelled", "result": "Cancelled by request"})
+            upsert_run(run_id, status="cancelled", result="Cancelled by request")
+            logger.info(f"Workflow {run_id} cancelled.")
+            return
         workflow_status[run_id].update({"status": "completed", "result": result})
         upsert_run(run_id, status="completed", result=result, duration=elapsed,
                    end_time=__import__("datetime").datetime.utcnow(),
@@ -711,6 +746,12 @@ def _run_workflow_async(run_id, config_json):
         upsert_run(run_id, status="awaiting_approval",
                    result=f"Paused at {hap.checkpoint_node}")
         logger.info(f"Workflow {run_id} paused for human approval at {hap.checkpoint_node}")
+    except InterruptedError as ie:
+        # API-3: orchestrator raised InterruptedError due to cancel_check_fn
+        elapsed = f"{_t.time() - start:.2f}s"
+        workflow_status[run_id].update({"status": "cancelled", "result": str(ie)})
+        upsert_run(run_id, status="cancelled", result=str(ie), duration=elapsed)
+        logger.info(f"Workflow {run_id} cancelled: {ie}")
     except Exception as e:
         elapsed = f"{_t.time() - start:.2f}s"
         workflow_status[run_id].update({"status": "error", "result": str(e)})
@@ -727,7 +768,8 @@ def orchestrate_async(req: OrchestrationRequest, template_name: Optional[str] = 
     logger.info(f"Received async orchestration request: run_id={run_id}, template={template_name}")
     # Persist initial run metadata including the submitted config (store a deep copy to avoid later mutation)
     import copy
-    workflow_status[run_id] = {"status": "started", "result": None, "config": copy.deepcopy(req.config_json), "template": template_name}
+    # OBS-6: use helper to set entry (respects LRU cap)
+    _workflow_status_set(run_id, {"status": "started", "result": None, "config": copy.deepcopy(req.config_json), "template": template_name})
     # Derive a human-readable name from config
     _wf_name = req.config_json.get("graph_name") or req.config_json.get("name") or (template_name if template_name else f"Run {run_id[:8]}")
     upsert_run(run_id, name=_wf_name, status="started", config=req.config_json, template=template_name)
@@ -800,6 +842,27 @@ def get_approval_status(run_id: str):
         "checkpoint_node": status.get("checkpoint_node"),
         "state_snapshot": _to_serializable(status.get("state_snapshot", {})),
     }
+
+
+@app.post("/runs/{run_id}/cancel")
+def cancel_run(run_id: str):
+    """API-3: Request cancellation of a running workflow.
+
+    Sets a cancellation flag that the orchestrator checks between steps.
+    Runs that are already in a terminal state (completed/error/cancelled)
+    are left unchanged.  Returns 404 if the run_id is not found.
+    """
+    status = workflow_status.get(run_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Run ID not found")
+    current = status.get("status", "")
+    if current in ("completed", "error", "cancelled"):
+        return {"run_id": run_id, "status": current, "message": "Run already in terminal state"}
+    # Set the cancellation flag that orchestrator inspects between steps
+    status["_cancel_requested"] = True
+    status["status"] = "cancelling"
+    logger.info(f"Cancellation requested for run_id={run_id}")
+    return {"run_id": run_id, "status": "cancelling", "message": "Cancellation requested"}
 
 
 @app.get("/status/{run_id}")

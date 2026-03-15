@@ -84,7 +84,23 @@ class ConfigManager:
         self._config = merged
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self._config.get(key, default)
+        """CFG-2: Support dot-notation path for nested config access.
+
+        e.g., config_mgr.get("memory.backend", "sqlite") is equivalent to
+        config_mgr.get("memory", {}).get("backend", "sqlite").
+        Falls back to top-level key lookup if no dot is present.
+        """
+        if "." not in key:
+            return self._config.get(key, default)
+        parts = key.split(".")
+        node: Any = self._config
+        for part in parts:
+            if not isinstance(node, dict):
+                return default
+            node = node.get(part)
+            if node is None:
+                return default
+        return node if node is not None else default
 
     def reload(self):
         self._load_config()

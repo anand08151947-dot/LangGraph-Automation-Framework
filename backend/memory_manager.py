@@ -195,6 +195,35 @@ class MemoryManager:
                     _log.getLogger(__name__).error("LTM reset failed for session %s: %s", session_id, exc)
                     raise MemoryError(f"LTM reset error for session {session_id}: {exc}") from exc
 
+    def prune_ltm_global(self, ttl_days: float) -> int:
+        """MEM-5: Delete LTM entries older than ttl_days across ALL sessions.
+
+        Intended to be called on startup or by a background scheduler to prevent
+        unbounded LTM growth in long-running deployments.
+
+        Returns the number of rows deleted.
+        """
+        if self.ltm_backend != 'sqlite' or ttl_days <= 0:
+            return 0
+        cutoff = time.time() - (ttl_days * 86400)
+        with self._ltm_lock:
+            try:
+                conn = sqlite3.connect(self.ltm_path)
+                c = conn.cursor()
+                c.execute('DELETE FROM ltm WHERE timestamp > 0 AND timestamp < ?', (cutoff,))
+                deleted = c.rowcount
+                conn.commit()
+                conn.close()
+                import logging as _log
+                _log.getLogger(__name__).info(
+                    "prune_ltm_global: deleted %d rows older than %.1f days", deleted, ttl_days
+                )
+                return deleted
+            except sqlite3.Error as exc:
+                import logging as _log
+                _log.getLogger(__name__).error("LTM global prune failed: %s", exc)
+                return 0
+
 # Example usage:
 # mm = MemoryManager()
 # mm.save_stm('sess1', {'step': 1, 'state': 'foo'})

@@ -266,6 +266,8 @@ def _execute_rag_search(
     if not results:
         return f"[RAG:{provider}] No results found for query: {query[:100]}"
 
+    # RAG-2: deduplicate results by content hash before formatting
+    results = RagProviderRegistry.deduplicate(results)
     chunks = [f"[Doc {i+1}] {r}" for i, r in enumerate(results)]
     return "\n\n".join(chunks)
 

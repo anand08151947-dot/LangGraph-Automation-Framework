@@ -79,9 +79,7 @@ class LLMTranslator:
         except Exception:
             # Fall back to legacy completions endpoint
             text = self._call_lm_studio_completions(prompt, temperature)
-        return self._strip_code_fences(text)
-
-    def _call_lm_studio_completions(self, prompt: str, temperature: float = 0.2) -> str:
+        return text
         """Legacy /v1/completions endpoint — fallback for older LM Studio versions."""
         payload = {
             "model": self.lm_studio_model,
@@ -94,18 +92,66 @@ class LLMTranslator:
         response.raise_for_status()
         data = response.json()
         text = data["choices"][0]["text"].strip()
-        return self._strip_code_fences(text)
+        return text
 
     @staticmethod
-    def _strip_code_fences(text: str) -> str:
-        """Remove markdown ```json ... ``` fences that models sometimes wrap output in."""
-        if text.startswith("```"):
-            lines = text.splitlines()
-            lines = lines[1:] if lines[0].startswith("```") else lines
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            text = "\n".join(lines).strip()
-        return text
+    def _extract_json(text: str) -> str:
+        """LLM-3: Multi-strategy JSON extraction from raw LLM output.
+
+        Strategies tried in order:
+          1. Direct parse — the LLM returned pure JSON.
+          2. Code-fence extraction — strip ```json ... ``` or ``` ... ``` wrapper.
+          3. Brace-scan — find the first { and the last } and extract between them.
+          4. Raise with a clear error message including the raw response.
+        """
+        import re as _re
+
+        text = text.strip()
+
+        # Strategy 1: direct parse
+        try:
+            json.loads(text)
+            return text  # it's already valid JSON
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 2: extract from code fence (```json ... ``` or ``` ... ```)
+        fence_match = _re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, _re.DOTALL)
+        if fence_match:
+            candidate = fence_match.group(1).strip()
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 3: scan for the outermost JSON object
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            candidate = text[start:end + 1]
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass
+
+        # All strategies failed
+        preview = text[:200].replace("\n", " ")
+        raise ValueError(
+            f"Could not extract valid JSON from LLM response. "
+            f"First 200 chars: {preview!r}"
+        )
+
+    def _parse_json_and_validate(self, raw: str) -> Dict[str, Any]:
+        """LLM-3: Extract JSON using multi-strategy extractor, then validate."""
+        json_str = self._extract_json(raw)
+        try:
+            config = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse extracted JSON: {e}\nExtracted: {json_str[:500]}")
+        self._validate(config)
+        return config
 
     def _build_prompt(self, instructions: str, base_json: Optional[Dict[str, Any]] = None, customization: bool = False) -> str:
         # Compact schema — avoids token bloat while keeping field names visible
@@ -144,14 +190,6 @@ class LLMTranslator:
                 "OUTPUT (JSON only):"
             )
         return prompt
-
-    def _parse_json_and_validate(self, json_str: str) -> Dict[str, Any]:
-        try:
-            config = json.loads(json_str)
-        except Exception as e:
-            raise ValueError(f"Failed to parse JSON from LLM response: {e}\nResponse was:\n{json_str}")
-        self._validate(config)
-        return config
 
     def get_prompt(self, instructions: str, base_json: Optional[Dict[str, Any]] = None, customization: bool = False) -> str:
         """Return the full prompt (useful for APIs that need to return prompt to user)."""
@@ -199,10 +237,8 @@ class LLMTranslator:
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.2,
                 )
-                json_str = response["choices"][0]["message"]["content"]
-                config = json.loads(json_str)
-                self._validate(config)
-                return config
+                raw = response["choices"][0]["message"]["content"]
+                return self._parse_json_and_validate(raw)
             except Exception as e:
                 if attempt == retries:
                     raise ValueError(f"LLM translation failed after {retries+1} attempts: {e}")
@@ -244,10 +280,8 @@ class LLMTranslator:
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.2,
                 )
-                json_str = response["choices"][0]["message"]["content"]
-                config = json.loads(json_str)
-                self._validate(config)
-                return config
+                raw = response["choices"][0]["message"]["content"]
+                return self._parse_json_and_validate(raw)
             except Exception as e:
                 if attempt == retries:
                     raise ValueError(f"LLM customization failed after {retries+1} attempts: {e}")

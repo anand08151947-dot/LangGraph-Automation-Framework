@@ -179,7 +179,17 @@ class RagProviderRegistry:
         if name in ("ltm", "local", ""):
             return LtmRagProvider(memory_manager, session_id)
         elif name == "local_files":
-            directory = config.get("directory", ".")
+            # RAG-4: prefer documents_path, fall back to directory, then "."
+            directory = (
+                config.get("documents_path")
+                or config.get("directory")
+                or "."
+            )
+            if not os.path.isdir(directory):
+                raise ValueError(
+                    f"LocalFileRagProvider: directory '{directory}' does not exist. "
+                    "Set 'documents_path' or 'directory' in the RAG provider config."
+                )
             return LocalFileRagProvider(directory)
         elif name == "chroma":
             persist_dir = config.get("persist_directory", "./chroma_db")
@@ -187,3 +197,20 @@ class RagProviderRegistry:
         else:
             logger.warning("Unknown RAG provider '%s', falling back to LTM", name)
             return LtmRagProvider(memory_manager, session_id)
+
+    @staticmethod
+    def deduplicate(results: List[str]) -> List[str]:
+        """RAG-2: Remove duplicate documents by content hash, preserving order.
+
+        Two results are considered duplicates if their content is identical
+        after whitespace normalization.
+        """
+        import hashlib
+        seen: set = set()
+        deduped: List[str] = []
+        for doc in results:
+            key = hashlib.md5(" ".join(doc.split()).encode("utf-8", errors="replace")).hexdigest()
+            if key not in seen:
+                seen.add(key)
+                deduped.append(doc)
+        return deduped

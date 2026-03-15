@@ -101,9 +101,20 @@ class MCPClient:
         """MCP-1/2: Discover tools available on this MCP server using the
         official JSON-RPC tools/list protocol.
 
+        MCP-4: Results are cached by server_name + config hash for up to
+        _MCP_CACHE_TTL_SECONDS to avoid redundant subprocess/network calls.
+
         Supports server types: stdio, sse, http.
         Falls back to empty list (no simulated tools) when real discovery fails.
         """
+        # MCP-4: check TTL cache before hitting the server
+        ttl = float(self.server_config.get("cache_ttl_seconds", _MCP_CACHE_TTL_SECONDS))
+        cached = _get_cached_tools(self.server_name, self.server_config, ttl=ttl)
+        if cached is not None:
+            names, schemas = cached
+            self.tool_schemas = schemas
+            return names
+
         stype = self.server_config.get("type", "")
         auth_headers = _build_auth_headers(self.server_config.get("auth") or {})
 
@@ -137,6 +148,7 @@ class MCPClient:
                             t["name"]: t.get("inputSchema", {})
                             for t in tools if "name" in t
                         }
+                        _set_cached_tools(self.server_name, self.server_config, names, self.tool_schemas, ttl=ttl)
                         return names
                     except json.JSONDecodeError:
                         continue
@@ -151,6 +163,8 @@ class MCPClient:
                 return []
             names, schemas = _sse_jsonrpc_tools_list(base_url, auth_headers)
             self.tool_schemas = schemas
+            if names:
+                _set_cached_tools(self.server_name, self.server_config, names, schemas, ttl=ttl)
             return names
 
         elif stype in ("http", "rest"):
@@ -160,6 +174,8 @@ class MCPClient:
                 return [f"{self.server_name}_http_tool"]
             names, schemas = _http_jsonrpc_tools_list(endpoint, auth_headers)
             self.tool_schemas = schemas
+            if names:
+                _set_cached_tools(self.server_name, self.server_config, names, schemas, ttl=ttl)
             return names
 
         return []
@@ -170,6 +186,47 @@ class MCPClient:
     def get_tool_schema(self, tool_name: str) -> Dict[str, Any]:
         """Return the inputSchema for a specific tool, or {} if not found."""
         return self.tool_schemas.get(tool_name, {})
+
+
+# MCP-4: Module-level TTL cache for tool discovery results.
+# Key: (server_name, frozenset of config items), Value: (tool_names, schemas, expiry_time)
+import time as _time
+_mcp_tool_cache: Dict[str, tuple] = {}
+_MCP_CACHE_TTL_SECONDS = 300  # 5 minutes default; can be overridden via config
+
+def _mcp_cache_key(server_name: str, server_config: Dict[str, Any]) -> str:
+    """Stable string key from server name + config snapshot."""
+    import hashlib
+    cfg_repr = json.dumps(server_config, sort_keys=True, default=str)
+    return hashlib.md5(f"{server_name}:{cfg_repr}".encode()).hexdigest()
+
+
+def _get_cached_tools(
+    server_name: str,
+    server_config: Dict[str, Any],
+    ttl: float = _MCP_CACHE_TTL_SECONDS,
+) -> Optional[Tuple[List[str], Dict[str, Any]]]:
+    """Return cached (names, schemas) if still within TTL, or None."""
+    key = _mcp_cache_key(server_name, server_config)
+    entry = _mcp_tool_cache.get(key)
+    if entry is None:
+        return None
+    names, schemas, expiry = entry
+    if _time.monotonic() > expiry:
+        del _mcp_tool_cache[key]
+        return None
+    return names, schemas
+
+
+def _set_cached_tools(
+    server_name: str,
+    server_config: Dict[str, Any],
+    names: List[str],
+    schemas: Dict[str, Any],
+    ttl: float = _MCP_CACHE_TTL_SECONDS,
+) -> None:
+    key = _mcp_cache_key(server_name, server_config)
+    _mcp_tool_cache[key] = (names, schemas, _time.monotonic() + ttl)
 
 
 class MCPAutoBinder:
