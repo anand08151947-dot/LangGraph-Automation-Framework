@@ -4,6 +4,7 @@ import { Card, Button, Badge } from '../components/Shared';
 import { WorkflowRun, WorkflowStatus } from '../types';
 import { getWorkflowRuns } from '../services/api.runs';
 import branding from '../branding';
+import { StatCardSkeleton, TableRowSkeleton } from '../components/Skeleton';
 
 const MonitorStatusValues = new Set(['completed', 'failed', 'cancelled', 'error', 'running', 'started']);
 
@@ -22,9 +23,11 @@ function runToActivityItem(run: WorkflowRun): { time: string; text: string } {
 
 const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNavigate }) => {
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
+  const [loadingRuns, setLoadingRuns] = useState(true);
 
   useEffect(() => {
-    getWorkflowRuns().then(setRuns).catch(() => setRuns([]));
+    setLoadingRuns(true);
+    getWorkflowRuns().then(setRuns).catch(() => setRuns([])).finally(() => setLoadingRuns(false));
   }, []);
 
   const totalRuns = runs.length;
@@ -68,7 +71,9 @@ const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNav
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {stats.map((stat, i) => (
+        {loadingRuns
+          ? Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)
+          : stats.map((stat, i) => (
           <Card key={i} className="hover:border-indigo-200 transition-colors cursor-default">
             <div className="flex items-center gap-4">
               <div className={`w-12 h-12 rounded-xl bg-slate-50 flex items-center justify-center text-xl ${stat.color}`}>
@@ -82,8 +87,6 @@ const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNav
           </Card>
         ))}
       </div>
-
-      {/* Main Dashboard Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Recent Workflows */}
         <Card title="Recent Orchestrations" className="lg:col-span-2">
@@ -98,7 +101,9 @@ const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNav
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {runs.map((run) => (
+                {loadingRuns
+                  ? Array.from({ length: 3 }).map((_, i) => <TableRowSkeleton key={i} cols={4} />)
+                  : runs.map((run) => (
                   <tr key={run.id} className="group hover:bg-slate-50 transition-colors">
                     <td className="py-4">
                       <div className="flex items-center gap-3">
@@ -123,7 +128,7 @@ const DashboardView: React.FC<{ onNavigate: (path: string) => void }> = ({ onNav
                     </td>
                   </tr>
                 ))}
-                {runs.length === 0 && (
+                {!loadingRuns && runs.length === 0 && (
                   <tr>
                     <td colSpan={4} className="py-8 text-center text-slate-400">No runs yet. Start a workflow!</td>
                   </tr>

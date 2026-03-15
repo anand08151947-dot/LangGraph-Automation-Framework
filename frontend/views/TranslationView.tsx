@@ -4,6 +4,27 @@ import { Card, Button } from '../components/Shared';
 import { englishToJson, customizeJsonLLM } from '../services/api';
 import { TemplateInfo } from '../types';
 
+/** FE-UX-5: Lightweight JSON syntax highlighter — no external deps. */
+function highlightJson(json: string): string {
+  return json
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(
+      /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+      (match) => {
+        let cls = 'color:#a78bfa'; // number (purple)
+        if (/^"/.test(match)) {
+          cls = match.endsWith(':') ? 'color:#93c5fd' : 'color:#86efac'; // key=blue, string=green
+        } else if (/true|false/.test(match)) {
+          cls = 'color:#fbbf24'; // boolean=amber
+        } else if (/null/.test(match)) {
+          cls = 'color:#f87171'; // null=red
+        }
+        return `<span style="${cls}">${match}</span>`;
+      }
+    );
+}
+
+
 const TranslationView: React.FC<{
   initialTemplate?: TemplateInfo | null;
   onNavigate?: (path: string, data?: any) => void;
@@ -166,8 +187,14 @@ const TranslationView: React.FC<{
               </div>
               <textarea
                 readOnly
-                className="w-full h-full p-6 bg-slate-900 text-indigo-300 font-mono text-sm rounded-xl focus:outline-none overflow-auto"
+                className="w-full h-full p-6 bg-slate-900 text-indigo-300 font-mono text-sm rounded-xl focus:outline-none overflow-auto sr-only"
                 value={generatedJson}
+              />
+              {/* FE-UX-5: Syntax-highlighted JSON display */}
+              <pre
+                className="w-full h-full p-6 bg-slate-900 font-mono text-sm rounded-xl overflow-auto"
+                style={{ minHeight: '500px' }}
+                dangerouslySetInnerHTML={{ __html: highlightJson(generatedJson) }}
               />
             </div>
             <div className="mt-4 pt-4 border-t border-slate-100 flex gap-3">

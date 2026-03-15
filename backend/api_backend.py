@@ -927,10 +927,26 @@ async def ws_status(websocket: WebSocket, run_id: str):
 
 # --- Run History Endpoints (SQLite-backed) ---
 @app.get("/runs")
-def list_runs():
-    """List all workflow runs from DB."""
+def list_runs(page: int = 1, limit: int = 20):
+    """API-4: List workflow runs from DB with pagination.
+
+    Query params:
+      page  — 1-based page number (default: 1)
+      limit — max records per page (default: 20, max: 100)
+    """
+    limit = min(max(1, limit), 100)
+    page = max(1, page)
     records = get_all_runs()
-    return [record_to_dict(r) for r in records]
+    total = len(records)
+    start = (page - 1) * limit
+    paged = records[start: start + limit]
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": max(1, (total + limit - 1) // limit),
+        "items": [record_to_dict(r) for r in paged],
+    }
 
 @app.get("/run/{run_id}")
 def get_run_detail(run_id: str):

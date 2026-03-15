@@ -11,6 +11,7 @@ import SettingsView from './views/SettingsView';
 import HelpView from './views/HelpView';
 import { TemplateInfo } from './types';
 import { ToastProvider } from './components/Toast';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const App: React.FC = () => {
   const [currentPath, setCurrentPath] = useState('/');
@@ -54,11 +55,13 @@ const App: React.FC = () => {
   };
 
   return (
-    <ToastProvider>
-      <Layout activePath={currentPath} onNavigate={navigate}>
-        {renderContent()}
-      </Layout>
-    </ToastProvider>
+    <ErrorBoundary>
+      <ToastProvider>
+        <Layout activePath={currentPath} onNavigate={navigate}>
+          {renderContent()}
+        </Layout>
+      </ToastProvider>
+    </ErrorBoundary>
   );
 };
 

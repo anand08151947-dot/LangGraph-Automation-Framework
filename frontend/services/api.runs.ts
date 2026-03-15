@@ -1,9 +1,25 @@
 import { WorkflowRun } from '../types';
 import api from './api';
 
-// Fetch all workflow runs
-export const getWorkflowRuns = async (): Promise<WorkflowRun[]> => {
-  const res = await api.get<WorkflowRun[]>('/runs');
+// Fetch workflow runs with optional pagination (API-4)
+export const getWorkflowRuns = async (page = 1, limit = 20): Promise<WorkflowRun[]> => {
+  const res = await api.get<any>(`/runs?page=${page}&limit=${limit}`);
+  // Support both legacy array response and new paginated { items: [] } response
+  const data = res.data;
+  return Array.isArray(data) ? data : (data.items ?? []);
+};
+
+// FE-MON-2: Fetch approval checkpoint info
+export const getApprovalStatus = async (run_id: string): Promise<{
+  run_id: string; status: string; checkpoint_node?: string; state_snapshot?: any
+}> => {
+  const res = await api.get(`/approval/${run_id}`);
+  return res.data;
+};
+
+// FE-MON-2: Submit approval/resume for a run awaiting human approval
+export const submitApproval = async (run_id: string, approval_input: Record<string, any>): Promise<any> => {
+  const res = await api.post(`/resume/${run_id}`, { approval_input });
   return res.data;
 };
 
