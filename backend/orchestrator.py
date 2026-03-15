@@ -192,7 +192,10 @@ class Orchestrator:
         try:
             if _session_lock:
                 _session_lock.acquire()
-            stream_iter = iter(graph.stream(current_state))
+            stream_iter = iter(graph.stream(
+                current_state,
+                config={"configurable": {"thread_id": session_id}} if session_id else None,
+            ))
             # ORCH-1: use a thread pool so we can apply a per-node wall-clock timeout.
             # We manage shutdown manually (cancel_futures=True) to avoid blocking on
             # interpreter teardown (e.g., during tests).

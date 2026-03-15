@@ -44,6 +44,8 @@ The **generated bundle** ("the apple") is a standalone `agent.py` + supporting f
 | **LLM Translation** | Convert English instructions → workflow JSON via LM Studio, OpenAI, or Gemini |
 | **Template Customize Flow** | Open any template in the Translation view; refine with LLM; apply back to Builder |
 | **MCP Tool Binding** | Auto-discover and bind MCP tools (stdio / SSE / REST) to agents via config |
+| **True Parallel Execution** | Fan-out to multiple agents in parallel using LangGraph `Send()` API; configure via `parallel_execution` groups in config |
+| **Native Checkpointing** | LangGraph `SqliteSaver` checkpointing for crash-recovery and time-travel debug; enable via `"checkpointing": {"enabled": true}` in config |
 | **Pre-LLM Pipeline** | RAG (LTM / Chroma / Milvus / local files) + tool calls before every LLM call |
 | **Post-LLM Checks** | Output validation (required fields, rules), output schema enforcement, output guardrails |
 | **Input & Output Guardrails** | PII redaction, prompt-injection blocking, secrets detection, harmful content / hate speech filter |
@@ -52,8 +54,8 @@ The **generated bundle** ("the apple") is a standalone `agent.py` + supporting f
 | **Observability Hooks** | Trace nodes, log state transitions, capture agent outputs — all config-driven |
 | **Retry Policy** | Fixed or exponential backoff, configurable `retry_on` events |
 | **Human-in-the-Loop** | Checkpoint nodes pause for approval; resumable via API |
-| **Code Generation** | Produces a self-contained `agent.py` bundle from any workflow config |
-| **Artifact Export** | Download ZIP with `agent.py`, `requirements.txt`, `docker-compose.yml`, `.env.template`, run logs, STM/LTM snapshots, validation report |
+| **Runnable Agent Bundle** | Generated `agent.py` is a fully runnable CLI script (`--input`, `--session-id`, `--output-format json\|pretty`, `--resume`) |
+| **Artifact Export (ZIP)** | Download ZIP with `agent.py`, `requirements.txt`, `Dockerfile`, `docker-compose.yml`, `.github/workflows/ci.yml`, `.env.template`, run logs, STM/LTM snapshots |
 | **Versioned Templates** | Enterprise-grade templates with full memory/retry/observability config |
 
 ---
@@ -197,6 +199,72 @@ npm run dev
 
 See [COMMANDS.md](COMMANDS.md) for all CLI commands and API smoke tests.  
 See the in-app **Help & Docs** tab for the full JSON Schema reference.
+
+---
+
+## Parallel Execution
+
+Enable true parallel fan-out (using LangGraph `Send()`) by adding a `parallel_execution` block to your config:
+
+```json
+{
+  "nodes": [
+    { "id": "dispatcher", "type": "agent", "next": "collector" },
+    { "id": "research_A", "type": "agent", "next": "collector" },
+    { "id": "research_B", "type": "agent", "next": "collector" },
+    { "id": "collector",  "type": "agent", "next": "END" }
+  ],
+  "parallel_execution": [
+    {
+      "group": "research_fanout",
+      "nodes": ["research_A", "research_B"],
+      "fan_in": "collector"
+    }
+  ]
+}
+```
+
+A dispatcher node is automatically created to fan-out to all group nodes simultaneously. Falls back gracefully to sequential execution if fewer than 2 valid nodes are provided.
+
+---
+
+## Native Checkpointing (Crash Recovery + Time-Travel)
+
+Enable LangGraph's `SqliteSaver` checkpointing to persist graph state after every step:
+
+```json
+{
+  "checkpointing": {
+    "enabled": true,
+    "db_path": "artifacts/my_checkpoints.sqlite"
+  }
+}
+```
+
+Each workflow run stores state snapshots keyed by `session_id`. Resume any interrupted run by passing the same `session_id` — the graph will pick up where it left off. Useful for long-running pipelines and debugging.
+
+---
+
+## Running the Generated Bundle
+
+Every exported `agent.py` is a fully runnable CLI script:
+
+```bash
+# Basic run with JSON input
+python agent.py --input '{"document_text": "Analyze this document."}'
+
+# Load input from file, output as machine-readable JSON
+python agent.py --input-file data.json --output-format json
+
+# Resume a previous session
+python agent.py --session-id abc123 --resume
+
+# Help
+python agent.py --help
+```
+
+The export ZIP also includes a `Dockerfile`, `docker-compose.yml`, and `.github/workflows/ci.yml` for immediate containerised deployment and CI/CD.
+
 
 ---
 

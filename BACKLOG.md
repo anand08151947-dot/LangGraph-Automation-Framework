@@ -19,10 +19,10 @@
 | STREAM-1 | Stream LLM output token-by-token to the frontend via SSE | `api_backend`, `orchestrator`, `graph_factory` | 🔴 |
 | STREAM-2 | Show live agent-by-agent progress in the Workflow Builder and Monitor | `frontend/views/MonitorView` | 🔴 |
 | GRAPH-1 | Subgraph composition — embed one workflow JSON as a node in another | `graph_factory.py` | 🔴 |
-| GRAPH-2 | Native LangGraph `Send()` fan-out for true parallel node execution | `graph_factory.py` | 🔴 |
-| GRAPH-3 | LangGraph graph-level checkpointing using `SqliteSaver` | `orchestrator.py` | 🔴 |
-| GEN-1 | Generated `agent.py` bundle must be fully runnable CLI script | `code_generator.py` | 🔴 |
-| GEN-2 | Generate `docker-compose.yml` and `Dockerfile` for one-command deploy | `code_generator.py` | 🔴 |
+| GRAPH-2 | ~~Native LangGraph `Send()` fan-out for true parallel node execution~~ ✅ **Done** | `graph_factory.py` | 🔴 |
+| GRAPH-3 | ~~LangGraph graph-level checkpointing using `SqliteSaver`~~ ✅ **Done** | `orchestrator.py` | 🔴 |
+| GEN-1 | ~~Generated `agent.py` bundle must be fully runnable CLI script~~ ✅ **Done** | `code_generator.py` | 🔴 |
+| GEN-2 | ~~Generate `docker-compose.yml` and `Dockerfile` for one-command deploy~~ ✅ **Done** | `code_generator.py` | 🔴 |
 | LLM-4 | Multi-provider fallback chain (OpenAI → LM Studio → Gemini, configurable) | `llm_translator.py`, `graph_factory.py` | 🔴 |
 | LLM-5 | Actual token usage tracking per run (from LLM API response) | `graph_factory.py`, `observability_manager.py` | 🟡 |
 | LLM-6 | Streaming LLM responses in the generated bundle (`agent.py`) | `code_generator.py` | 🟡 |

@@ -12,6 +12,16 @@ try:
 except Exception:
     requests = None
 
+# GEN-2: Import CodeGenerator to include deployment artifacts in the bundle
+try:
+    sys.path.insert(0, os.path.dirname(__file__))
+    from code_generator import CodeGenerator as _CodeGenerator
+    _code_gen = _CodeGenerator()
+    _CODE_GEN_AVAILABLE = True
+except Exception:
+    _code_gen = None  # type: ignore
+    _CODE_GEN_AVAILABLE = False
+
 
 def fetch_json(url):
     if requests:
@@ -135,6 +145,26 @@ def main():
         pattern = os.path.join(artifacts_dir, f"{run_id}*")
         for path in glob.glob(pattern):
             add_to_zip(path)
+
+        # GEN-2: Include deployment artifacts (Dockerfile, docker-compose.yml, CI workflow)
+        if _CODE_GEN_AVAILABLE and config is not None:
+            try:
+                dockerfile_content = _code_gen.generate_dockerfile(config)
+                z.writestr("Dockerfile", dockerfile_content)
+            except Exception as _e:
+                z.writestr("Dockerfile.error", f"# Failed to generate Dockerfile: {_e}\n")
+
+            try:
+                compose_content = _code_gen.generate_docker_compose(config)
+                z.writestr("docker-compose.yml", compose_content)
+            except Exception as _e:
+                z.writestr("docker-compose.error.yml", f"# Failed to generate docker-compose.yml: {_e}\n")
+
+            try:
+                ci_content = _code_gen.generate_github_actions(config)
+                z.writestr(".github/workflows/ci.yml", ci_content)
+            except Exception as _e:
+                z.writestr(".github/workflows/ci.error.yml", f"# Failed to generate ci.yml: {_e}\n")
 
     print("Bundle created:", bundle_path)
 

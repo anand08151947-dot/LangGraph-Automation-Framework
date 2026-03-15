@@ -34,6 +34,26 @@ except ImportError:
     StateGraph = None  # type: ignore
     END = "__end__"
 
+# GRAPH-2: Send() for true parallel fan-out (LangGraph 0.2+)
+try:
+    from langgraph.types import Send
+    SEND_AVAILABLE = True
+except ImportError:
+    try:
+        from langgraph.constants import Send  # type: ignore
+        SEND_AVAILABLE = True
+    except ImportError:
+        SEND_AVAILABLE = False
+        Send = None  # type: ignore
+
+# GRAPH-3: Native LangGraph checkpointing
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    SQLITE_CHECKPOINTER_AVAILABLE = True
+except ImportError:
+    SQLITE_CHECKPOINTER_AVAILABLE = False
+    SqliteSaver = None  # type: ignore
+
 from typing import TypedDict, Any, Dict, List, Optional, get_type_hints
 import json
 import logging
@@ -979,38 +999,81 @@ class GraphFactory:
                 builder.add_edge(nid, END)
                 edges_set.add(nid)
 
-        # 4. Parallel execution groups — sequential fallback
-        # True parallel fan-out requires LangGraph 0.2+ Send() API.
-        # We add sequential edges between group nodes as a safe fallback.
+        # 4. Parallel execution groups — GRAPH-2: true fan-out with Send() when available
         parallel_groups = config_json.get("parallel_execution", [])
         if parallel_groups:
-            logger.warning(
-                "parallel_execution detected (%d group(s)). True parallel fan-out "
-                "requires LangGraph 0.2+ with Send() API. "
-                "Adding sequential fallback edges between group nodes.",
-                len(parallel_groups),
-            )
             valid_node_ids = set(node_ids)
             for group in parallel_groups:
                 group_name = group.get("group", "")
-                group_nodes = group.get("nodes", [])
+                group_nodes = [n for n in group.get("nodes", []) if n in valid_node_ids]
+                fan_in_node = group.get("fan_in")  # optional collector node
                 timeout_ms = group.get("timeout_ms")
                 if timeout_ms:
-                    logger.info(
-                        "Parallel group '%s' timeout_ms=%s — enforce via asyncio in production.",
-                        group_name, timeout_ms,
+                    logger.info("Parallel group '%s' timeout_ms=%s", group_name, timeout_ms)
+
+                if SEND_AVAILABLE and group_nodes and len(group_nodes) > 1:
+                    # True parallel fan-out via Send()
+                    dispatcher_id = f"__dispatch_{group_name}__"
+
+                    def _make_dispatcher(targets):
+                        def _dispatch(state: Dict[str, Any]):
+                            return [Send(t, state) for t in targets]
+                        return _dispatch
+
+                    builder.add_node(dispatcher_id, lambda s: s)  # passthrough
+                    builder.add_conditional_edges(
+                        dispatcher_id,
+                        _make_dispatcher(group_nodes),
+                        {t: t for t in group_nodes},
                     )
-                # Add sequential edges for group nodes not yet wired
-                for i, nid in enumerate(group_nodes):
-                    if nid not in valid_node_ids or nid in edges_set:
-                        continue
-                    if i < len(group_nodes) - 1:
-                        next_nid = group_nodes[i + 1]
-                        if next_nid in valid_node_ids:
+                    logger.info(
+                        "Parallel group '%s': Send() fan-out → %s",
+                        group_name, group_nodes,
+                    )
+                    # Wire fan-in if specified
+                    if fan_in_node and fan_in_node in valid_node_ids:
+                        for nid in group_nodes:
+                            if nid not in edges_set:
+                                builder.add_edge(nid, fan_in_node)
+                                edges_set.add(nid)
+                else:
+                    # Fallback: sequential edges between group nodes
+                    if SEND_AVAILABLE:
+                        logger.warning(
+                            "Parallel group '%s' has <2 valid nodes; using sequential fallback.",
+                            group_name,
+                        )
+                    else:
+                        logger.warning(
+                            "Send() not available; parallel group '%s' using sequential fallback.",
+                            group_name,
+                        )
+                    for i, nid in enumerate(group_nodes):
+                        if nid in edges_set:
+                            continue
+                        if i < len(group_nodes) - 1:
+                            next_nid = group_nodes[i + 1]
                             builder.add_edge(nid, next_nid)
                             edges_set.add(nid)
 
-        return builder.compile()
+        # GRAPH-3: LangGraph native checkpointing via SqliteSaver
+        compile_kwargs = {}
+        if SQLITE_CHECKPOINTER_AVAILABLE and checkpointing_cfg.get("enabled", False):
+            import os as _os
+            artifacts_dir = _os.path.join(_os.path.dirname(__file__), "artifacts")
+            _os.makedirs(artifacts_dir, exist_ok=True)
+            db_path = checkpointing_cfg.get(
+                "db_path",
+                _os.path.join(artifacts_dir, "langgraph_checkpoints.sqlite"),
+            )
+            try:
+                checkpointer = SqliteSaver.from_conn_string(db_path)
+                compile_kwargs["checkpointer"] = checkpointer
+                logger.info("GRAPH-3: LangGraph SqliteSaver checkpointer enabled at %s", db_path)
+            except Exception as _ce:
+                logger.warning("GRAPH-3: SqliteSaver init failed (%s); compiling without checkpointer.", _ce)
+
+        return builder.compile(**compile_kwargs)
 
     def make_default_state(self, config_json: Dict[str, Any]) -> Dict[str, Any]:
         """Return the default initial state dict for a given config_json."""
