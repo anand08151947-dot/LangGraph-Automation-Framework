@@ -1,5 +1,13 @@
 import sys, os as _os
 sys.path.insert(0, _os.path.dirname(__file__))
+
+# Load .env from project root before any config/access_control imports
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(_os.path.join(_os.path.dirname(__file__), '..', '.env'))
+except ImportError:
+    pass  # python-dotenv not installed; rely on env vars being set externally
+
 from db import init_db, upsert_run, get_run, get_all_runs, record_to_dict, \
     seed_templates_from_files, get_all_templates, get_template_by_name, template_record_to_dict, \
     save_custom_template, get_template_versions, get_custom_templates
