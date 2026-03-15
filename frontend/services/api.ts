@@ -166,17 +166,16 @@ export const updateLlmConfig = async (config: Record<string, string>): Promise<a
 };
 
 export default api;
+
+// Note: getApprovalStatus and submitApproval live in api.runs.ts
+// resumeRun below is the full-featured version (pass config_json + approval_input)
 export const resumeRun = async (run_id: string, config_json: any, approval_input: Record<string, any> = {}): Promise<any> => {
   const res = await api.post(`/resume/${run_id}`, { config_json, approval_input });
   return res.data;
 };
 
-export const getApprovalStatus = async (run_id: string): Promise<any> => {
-  const res = await api.get(`/approval/${run_id}`);
-  return res.data;
-};
-
 // FE-BUILD-3: Discover registered tools from the tool registry
+// (alias kept for backward compatibility — prefer listTools below)
 export const getRegisteredTools = async (): Promise<any[]> => {
   const res = await api.get<any[]>('/tools');
   return res.data;

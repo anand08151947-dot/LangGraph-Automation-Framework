@@ -6,7 +6,8 @@ from db import init_db, upsert_run, get_run, get_all_runs, record_to_dict, \
 init_db()
 seed_templates_from_files()
 
-from fastapi import FastAPI, Body, Request, HTTPException
+from fastapi import FastAPI, Body, Request, HTTPException, Query
+from typing import Optional, List, Dict, Any
 from fastapi.middleware.cors import CORSMiddleware
 
 # ── Module-level helper: recursively make objects JSON-serializable ────────────
@@ -151,40 +152,61 @@ def reload_config(request: Request):
             raise HTTPException(status_code=400, detail=f"Reload failed: {e}")
 
 @app.post("/config/validate")
-def validate_config():
-    """Validate the current config against schema."""
+def validate_config(body: dict = Body(default={})):
+    """Validate a submitted config_json, or the server's loaded config if none provided.
+
+    Returns: {valid: bool, errors?: [str]}
+    Never raises HTTP 4xx — caller checks the `valid` field instead.
+    """
+    target = body.get("config_json") or config_mgr.config
     try:
-        config_mgr.schema.parse_obj(config_mgr.config)
-        return {"status": "valid"}
+        config_mgr.schema.parse_obj(target)
+        return {"valid": True}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Validation failed: {e}")
+        return {"valid": False, "errors": [str(e)]}
 import zipfile, re
 from fastapi.responses import FileResponse
 # --- Bundle Download Endpoint ---
 @app.get("/download_bundle")
-def download_bundle(include_templates: bool = True, include_code: bool = True, config_name: str = None):
+def download_bundle(
+    include_templates: bool = True,
+    include_code: bool = True,
+    config_name: str = None,
+    artifact_ids: Optional[str] = Query(None, description="Comma-separated run IDs to bundle"),
+):
     bundle_path = "bundle.zip"
     with zipfile.ZipFile(bundle_path, "w") as bundle:
-        # Add workflow configs
-        config_dir = "."
-        if config_name:
-            bundle.write(config_name)
+        # If specific artifact_ids were requested, bundle their artifact directories
+        if artifact_ids:
+            ids = [a.strip() for a in artifact_ids.split(",") if a.strip()]
+            artifacts_dir = os.path.join(os.path.dirname(__file__), "artifacts")
+            for aid in ids:
+                run_dir = os.path.join(artifacts_dir, aid)
+                if os.path.isdir(run_dir):
+                    for fname in os.listdir(run_dir):
+                        fpath = os.path.join(run_dir, fname)
+                        bundle.write(fpath, arcname=os.path.join(aid, fname))
         else:
-            for fname in os.listdir(config_dir):
-                if fname.endswith(".json"):
-                    bundle.write(fname)
-        # Add code files
-        if include_code:
-            for code_file in ["graph_factory.py", "orchestrator.py", "mcp_autobinder.py", "llm_translator.py", "template_manager.py"]:
-                if os.path.exists(code_file):
-                    bundle.write(code_file)
-        # Add templates
-        if include_templates:
-            template_dir = "prompt_templates"
-            if os.path.exists(template_dir):
-                for fname in os.listdir(template_dir):
-                    path = os.path.join(template_dir, fname)
-                    bundle.write(path)
+            # Add workflow configs
+            config_dir = "."
+            if config_name:
+                bundle.write(config_name)
+            else:
+                for fname in os.listdir(config_dir):
+                    if fname.endswith(".json"):
+                        bundle.write(fname)
+            # Add code files
+            if include_code:
+                for code_file in ["graph_factory.py", "orchestrator.py", "mcp_autobinder.py", "llm_translator.py", "template_manager.py"]:
+                    if os.path.exists(code_file):
+                        bundle.write(code_file)
+            # Add templates
+            if include_templates:
+                template_dir = "prompt_templates"
+                if os.path.exists(template_dir):
+                    for fname in os.listdir(template_dir):
+                        path = os.path.join(template_dir, fname)
+                        bundle.write(path)
     return FileResponse(bundle_path, media_type="application/zip", filename="agentic_ai_bundle.zip")
 """
 FastAPI backend for LangGraph Automation Framework
@@ -826,7 +848,7 @@ def orchestrate_async(req: OrchestrationRequest, template_name: Optional[str] = 
     return {"run_id": run_id, "status": "started"}
 
 class ResumeRequest(BaseModel):
-    config_json: Dict[str, Any]
+    config_json: Dict[str, Any] = {}   # optional — may be omitted by lightweight approval clients
     approval_input: Dict[str, Any] = {}
 
 @app.post("/resume/{run_id}")

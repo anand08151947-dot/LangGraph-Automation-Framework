@@ -18,8 +18,8 @@ export const getApprovalStatus = async (run_id: string): Promise<{
 };
 
 // FE-MON-2: Submit approval/resume for a run awaiting human approval
-export const submitApproval = async (run_id: string, approval_input: Record<string, any>): Promise<any> => {
-  const res = await api.post(`/resume/${run_id}`, { approval_input });
+export const submitApproval = async (run_id: string, approval_input: Record<string, any>, config_json: any = {}): Promise<any> => {
+  const res = await api.post(`/resume/${run_id}`, { config_json, approval_input });
   return res.data;
 };
 
