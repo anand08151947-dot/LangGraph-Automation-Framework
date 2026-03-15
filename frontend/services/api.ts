@@ -175,3 +175,9 @@ export const getApprovalStatus = async (run_id: string): Promise<any> => {
   const res = await api.get(`/approval/${run_id}`);
   return res.data;
 };
+
+// FE-BUILD-3: Discover registered tools from the tool registry
+export const getRegisteredTools = async (): Promise<any[]> => {
+  const res = await api.get<any[]>('/tools');
+  return res.data;
+};

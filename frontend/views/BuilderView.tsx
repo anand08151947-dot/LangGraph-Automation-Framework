@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import ReactDOM from 'react-dom';
 import { TemplateInfo } from '../types';
 import { useWorkflowBuilder } from '../hooks/useWorkflowBuilder';
-import { saveTemplate, orchestrateAsync, getStatus, getCustomTemplates, getTemplateVersions } from '../services/api';
+import { saveTemplate, orchestrateAsync, getStatus, getCustomTemplates, getTemplateVersions, getRegisteredTools } from '../services/api';
 
 // ── Local Types ──────────────────────────────────────────────────────────────
 
@@ -715,6 +715,28 @@ const NodeDetailPanel: React.FC<{
   stateVars: StateVarMeta[];
 }> = ({ node, onChange, stateKeys, stateVars }) => {
   const [toolInput, setToolInput] = useState('');
+  const [discoveredTools, setDiscoveredTools] = useState<string[]>([]);
+  const [discoverLoading, setDiscoverLoading] = useState(false);
+  const [showDiscovered, setShowDiscovered] = useState(false);
+
+  const discoverTools = async () => {
+    setDiscoverLoading(true);
+    setShowDiscovered(false);
+    try {
+      const tools = await getRegisteredTools();
+      setDiscoveredTools((tools || []).map((t: any) => t.name || t).filter(Boolean));
+      setShowDiscovered(true);
+    } catch {
+      setDiscoveredTools([]);
+    }
+    setDiscoverLoading(false);
+  };
+
+  const addDiscoveredTool = (name: string) => {
+    if (!(node.tools ?? []).includes(name)) {
+      onChange({ ...node, tools: [...(node.tools ?? []), name] });
+    }
+  };
 
   const addTool = () => {
     if (!toolInput.trim()) return;
@@ -839,7 +861,48 @@ const NodeDetailPanel: React.FC<{
               onKeyDown={e => { if (e.key === 'Enter') addTool(); }}
               placeholder="tool name (press Enter)" className="flex-1" />
             <button onClick={addTool} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition-colors">+</button>
+            {/* FE-BUILD-3: Discover Tools from registry */}
+            <button
+              onClick={discoverTools}
+              disabled={discoverLoading}
+              className="px-3 py-2 bg-teal-600 text-white rounded-lg text-xs font-bold hover:bg-teal-700 transition-colors flex items-center gap-1"
+              title="Discover registered tools from backend"
+            >
+              <i className={`fas ${discoverLoading ? 'fa-spinner fa-spin' : 'fa-satellite-dish'} text-[10px]`}></i>
+              {discoverLoading ? '' : 'Discover'}
+            </button>
           </div>
+          {/* Discovered tools picker */}
+          {showDiscovered && (
+            <div className="mb-2 p-3 bg-teal-50 border border-teal-200 rounded-xl">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] font-bold text-teal-700 uppercase tracking-widest">
+                  <i className="fas fa-satellite-dish mr-1"></i> Registered Tools ({discoveredTools.length})
+                </p>
+                <button onClick={() => setShowDiscovered(false)} className="text-teal-400 hover:text-teal-700 text-xs">✕</button>
+              </div>
+              {discoveredTools.length === 0 ? (
+                <p className="text-xs text-teal-500">No tools registered. Register tools via the Tools API.</p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {discoveredTools.map(t => (
+                    <button
+                      key={t}
+                      onClick={() => addDiscoveredTool(t)}
+                      disabled={(node.tools ?? []).includes(t)}
+                      className={`px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                        (node.tools ?? []).includes(t)
+                          ? 'bg-teal-200 text-teal-500 border-teal-200 cursor-default'
+                          : 'bg-white text-teal-700 border-teal-300 hover:bg-teal-100'
+                      }`}
+                    >
+                      {(node.tools ?? []).includes(t) ? '✓ ' : '+ '}{t}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex flex-wrap gap-1">
             {(node.tools ?? []).map((t, ti) => (
               <span key={ti} className="flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-700 rounded-full text-xs font-medium">
